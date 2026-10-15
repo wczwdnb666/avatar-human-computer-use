@@ -366,7 +366,7 @@ def _isolate_global_state():
             if sig not in _GLOBAL_DRIFT:
                 _GLOBAL_DRIFT.append(sig)
                 print("\n[conftest] ⚠ 全局状态漂移（不可复位）：%s "
-                      "%r → %r" % (key, b, c))
+                      "%r -> %r" % (key, b, c))
 
     # ---- 可复位的：开测前先复位 ----
     _restore_global_state(_GLOBAL_BASELINE, cur_before)

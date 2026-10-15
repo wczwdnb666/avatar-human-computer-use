@@ -55,10 +55,10 @@ def check(name, fn):
         print("  [OK  ] %s" % name)
     except AssertionError as e:
         _RESULTS.append((name, False, str(e)))
-        print("  [FAIL] %s  → %s" % (name, e))
+        print("  [FAIL] %s  -> %s" % (name, e))
     except Exception as e:
         _RESULTS.append((name, False, "%r" % (e,)))
-        print("  [ERR ] %s  → %r" % (name, e))
+        print("  [ERR ] %s  -> %r" % (name, e))
 
 
 def section(t):
@@ -503,7 +503,7 @@ def main():
         print()
         print("失败项：")
         for n, d in failed:
-            print("  · %s → %s" % (n, d))
+            print("  · %s -> %s" % (n, d))
     return 0 if not failed else 1
 
 

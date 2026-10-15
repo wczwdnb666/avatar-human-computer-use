@@ -1591,7 +1591,7 @@ _ALL_TYPES = (
 def _main() -> int:
     r = selfcheck()
     for c in r["checks"]:
-        print("  %s %-46s %s" % ("✓" if c["ok"] else "✗", c["name"], c["detail"]))
+        print("  %s %-46s %s" % ("[OK]" if c["ok"] else "[FAIL]", c["name"], c["detail"]))
     n = len(r["checks"])
     print("fingerprints 自检：%d/%d 通过，%.3fs"
           % (n - len(r["failures"]), n, r["elapsed"]))

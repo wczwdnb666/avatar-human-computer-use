@@ -413,7 +413,7 @@ def run_module_selfchecks(filt=None):
                          "累计 %.2fs > %.0fs 上限"
                          % (total_dt, TOTAL_SELFCHECK_MAX)))
         print()
-        print(C.fail("  ✗ 模块自检累计 %.2fs，超过 %.0fs 总时长红线"
+        print(C.fail("  [FAIL] 模块自检累计 %.2fs，超过 %.0fs 总时长红线"
                      % (total_dt, TOTAL_SELFCHECK_MAX)))
 
     if slow:

@@ -104,7 +104,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                len(r["checks"]), len(r["failures"])))
         for c in r["checks"]:
             sys.stderr.write("  %s %-10s %s\n"
-                             % ("✓" if c["ok"] else "✗", c["name"],
+                             % ("[OK]" if c["ok"] else "[FAIL]", c["name"],
                                 c["detail"]))
         for f in r["failures"]:
             sys.stderr.write("  FAIL %s\n" % f)
@@ -129,7 +129,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if not gdi_available():
         sys.stderr.write(
-            "✗ 拿不到桌面环境（user32 / gdi32 不可用）。\n"
+            "[FAIL] 拿不到桌面环境（user32 / gdi32 不可用）。\n"
             "  悬浮球需要 Windows 桌面。\n")
         return 1
 
@@ -140,7 +140,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         bridge = McpBridge(cwd=args["cwd"] or "")
         if bridge.start():
             sys.stderr.write(
-                "✓ 已连上主包（协议 %s，%d 个工具）\n"
+                "[OK] 已连上主包（协议 %s，%d 个工具）\n"
                 % (bridge.protocol_version or "?", len(bridge.tools)))
         else:
             # **连不上不阻止启动** —— 球还能显示状态，只是不能发命令
@@ -165,13 +165,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     ball.on_command = _on_command
 
     if not ball.create():
-        sys.stderr.write("✗ 建窗口失败：%s\n" % (ball.error or "未知"))
+        sys.stderr.write("[FAIL] 建窗口失败：%s\n" % (ball.error or "未知"))
         if bridge:
             bridge.stop()
         return 1
 
     sys.stderr.write(
-        "✓ 悬浮球已启动（%dpx，位置 %d,%d）\n"
+        "[OK] 悬浮球已启动（%dpx，位置 %d,%d）\n"
         "  拖拽移动 / 右键菜单 / Ctrl+C 退出\n"
         % (args["size"], args["x"], args["y"]))
 

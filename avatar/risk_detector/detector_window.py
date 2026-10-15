@@ -896,7 +896,7 @@ def _main() -> int:
     quick = "--full" not in sys.argv
     r = selfcheck(quick=quick)
     for c in r["checks"]:
-        print("  %s %-48s %s" % ("✓" if c["ok"] else "✗", c["name"], c["detail"]))
+        print("  %s %-48s %s" % ("[OK]" if c["ok"] else "[FAIL]", c["name"], c["detail"]))
     n = len(r["checks"])
     print("detector_window 自检：%d/%d 通过，%.3fs%s"
           % (n - len(r["failures"]), n, r["elapsed"],

@@ -909,7 +909,7 @@ def _main() -> int:
     quick = "--full" not in sys.argv
     r = selfcheck(quick=quick)
     for c in r["checks"]:
-        print("  %s %-50s %s" % ("✓" if c["ok"] else "✗", c["name"], c["detail"]))
+        print("  %s %-50s %s" % ("[OK]" if c["ok"] else "[FAIL]", c["name"], c["detail"]))
     n = len(r["checks"])
     print("context 自检：%d/%d 通过，%.3fs%s"
           % (n - len(r["failures"]), n, r["elapsed"],

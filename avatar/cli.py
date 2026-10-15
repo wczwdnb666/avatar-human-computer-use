@@ -102,7 +102,7 @@ def cmd_dpi(a):
           % (lay.virtual_size[0], lay.virtual_size[1],
              lay.virtual_origin[0], lay.virtual_origin[1]))
     for m in lay.monitors:
-        print("[%d] %-14s 物理 %dx%d / 缩放 %d%% → 逻辑 %dx%d"
+        print("[%d] %-14s 物理 %dx%d / 缩放 %d%% -> 逻辑 %dx%d"
               % (m.monitor_index, m.device or "?",
                  m.physical_width, m.physical_height, m.scale_percent,
                  int(round(m.physical_width / m.scale_x)),
@@ -168,9 +168,9 @@ def cmd_geom(a):
     print("标题        : %s" % (g.title or "(无标题)"))
     print("类名        : %s" % g.class_name)
     print("进程        : %s (pid=%d)" % (g.process or "?", g.pid))
-    print("带阴影矩形  : %dx%d @ (%d,%d)   ← GetWindowRect，比肉眼大一圈"
+    print("带阴影矩形  : %dx%d @ (%d,%d)   <- GetWindowRect，比肉眼大一圈"
           % (g.rect[2], g.rect[3], g.rect[0], g.rect[1]))
-    print("可见边框    : %dx%d @ (%d,%d)   ← DWM，肉眼看到的就是它"
+    print("可见边框    : %dx%d @ (%d,%d)   <- DWM，肉眼看到的就是它"
           % (g.frame[2], g.frame[3], g.frame[0], g.frame[1]))
     print("客户区      : %dx%d @ (%d,%d)"
           % (g.client_size[0], g.client_size[1], g.client[0], g.client[1]))
@@ -189,7 +189,7 @@ def cmd_cursor(a):
     m = lay.containing(x, y)
     print("物理坐标    : (%d, %d)" % (x, y))
     print("逻辑坐标    : %s" % (P.to_logical(x, y),))
-    print("归一化坐标  : (%d, %d)   ← SendInput 绝对坐标用这个" % (nx, ny))
+    print("归一化坐标  : (%d, %d)   <- SendInput 绝对坐标用这个" % (nx, ny))
     print("所在显示器  : %s" % ("[%d] %d%%" % (m.monitor_index, m.scale_percent) if m else "屏幕外"))
     print("虚拟桌面    : origin=%s size=%s" % (lay.virtual_origin, lay.virtual_size))
     wi = W.window_at(x, y)
@@ -203,7 +203,7 @@ def cmd_pixel(a):
         print("读不到像素（坐标越界或 DC 失败）: (%d, %d)" % (a.x, a.y))
         return 1
     r, g, b = px
-    print("(%d, %d) → RGB(%d, %d, %d)  #%02X%02X%02X" % (a.x, a.y, r, g, b, r, g, b))
+    print("(%d, %d) -> RGB(%d, %d, %d)  #%02X%02X%02X" % (a.x, a.y, r, g, b, r, g, b))
     print("灰度        : %d" % int(0.299 * r + 0.587 * g + 0.114 * b))
     return 0
 
@@ -259,7 +259,7 @@ def cmd_pick(a):
         try:
             g = P.geometry(wi.hwnd)
             cx, cy = g.screen_to_client(x, y)
-            print("窗口客户区坐标  : (%d, %d)  ← 喂给窗口内相对坐标动作" % (cx, cy))
+            print("窗口客户区坐标  : (%d, %d)  <- 喂给窗口内相对坐标动作" % (cx, cy))
             print("窗口 DPI        : %d (%d%%)" % (g.dpi, int(round(g.scale * 100))))
         except AvatarError as e:
             print("窗口几何取不到  : %s" % e)
@@ -367,15 +367,15 @@ def cmd_move(a):
         print("规划时长  : %.3f s" % plan.total_duration)
         _hr("真人化指标")
         print("速度峰值  : %d  %s" % (
-            m.peak_count, "✓ ≥2（像人）" if m.peak_count >= 2 else "✗ 只有 1 个（像机器）"))
+            m.peak_count, "[OK] ≥2（像人）" if m.peak_count >= 2 else "[FAIL] 只有 1 个（像机器）"))
         print("路径直度  : %.4f  %s" % (
-            m.straightness, "✓ ≠1（像人）" if m.straightness < 1.0 else "✗ 完全直线"))
+            m.straightness, "[OK] ≠1（像人）" if m.straightness < 1.0 else "[FAIL] 完全直线"))
         print("不对称度  : %.3f  %s" % (
-            m.asymmetry, "✓ <1（加速短）" if m.asymmetry < 0.98 else "✗ 对称"))
+            m.asymmetry, "[OK] <1（加速短）" if m.asymmetry < 0.98 else "[FAIL] 对称"))
         print("震颤能量  : %.4f" % m.tremor_energy)
         print("峰值速度  : %.0f px/s" % m.max_speed)
         print()
-        print("判定      : %s" % ("✓ 通过" if v["ok"] else "✗ %s" % v["failures"]))
+        print("判定      : %s" % ("[OK] 通过" if v["ok"] else "[FAIL] %s" % v["failures"]))
         return 0
 
     if a.human:
@@ -404,7 +404,7 @@ def cmd_move(a):
     print("起始坐标  : (%d, %d)" % before)
     print("实际落点  : (%d, %d)" % actual)
     err = ((actual[0] - a.x) ** 2 + (actual[1] - a.y) ** 2) ** 0.5
-    print("落点误差  : %.2f px  %s" % (err, "✓" if err <= 2.0 else "✗ 超 2px"))
+    print("落点误差  : %.2f px  %s" % (err, "[OK]" if err <= 2.0 else "[FAIL] 超 2px"))
 
     if res is not None:
         _hr("真人化指标")
@@ -413,9 +413,9 @@ def cmd_move(a):
         print("采样点数  : %d" % res.points)
         print("子运动段  : %d" % res.submovements)
         print("速度峰值  : %d  %s" % (res.peak_count,
-                                      "✓ ≥2（像人）" if res.peak_count >= 2 else "✗ 只有 1 个（像机器）"))
+                                      "[OK] ≥2（像人）" if res.peak_count >= 2 else "[FAIL] 只有 1 个（像机器）"))
         print("路径直度  : %.4f  %s" % (res.straightness,
-                                        "✓ ≠1（像人）" if res.straightness < 1.0 else "✗ 完全直线"))
+                                        "[OK] ≠1（像人）" if res.straightness < 1.0 else "[FAIL] 完全直线"))
         print()
         print("说明：峰值数 ≥2、直度 <1、有子运动段，是真人轨迹的三个特征。")
         print("      想看对比：把 --human 去掉再跑一次。")
@@ -506,7 +506,7 @@ def cmd_mode(a):
 
     _hr("交互模式")
     if changed:
-        print("已切换    : %s → %s" % (old, info["mode"]))
+        print("已切换    : %s -> %s" % (old, info["mode"]))
     print("当前模式  : %s" % info["mode"])
     print("允许降级  : %s" % ("是" if info["allow_fallback"] else "否"))
     _hr("两种模式的差异")
@@ -547,12 +547,12 @@ def cmd_entropy(a):
     same = s1 == s2
     print("种子      : %d" % seed)
     print("采样点    : %d" % len(s1))
-    print("两次一致  : %s  %s" % (same, "✓" if same else "✗ 违反可复现性！"))
+    print("两次一致  : %s  %s" % (same, "[OK]" if same else "[FAIL] 违反可复现性！"))
 
     entropy.seed(seed + 1)
     p3 = submove.plan_movement(100, 100, a.to_x, a.to_y, human=True, precision=1.2)
     s3 = [(round(s.x, 6), round(s.y, 6), round(s.delay, 6)) for s in p3.segments]
-    print("换种子变  : %s  %s" % (s1 != s3, "✓" if s1 != s3 else "✗ 熵源没起作用"))
+    print("换种子变  : %s  %s" % (s1 != s3, "[OK]" if s1 != s3 else "[FAIL] 熵源没起作用"))
 
     _hr("真人轨迹 vs 机械轨迹")
     entropy.seed(seed)
@@ -578,15 +578,15 @@ def cmd_entropy(a):
 
     v = metrics.verdict(mh)
     print()
-    print("真人化判定: %s" % ("✓ 通过" if v["ok"] else "✗ 失败: %s" % v["failures"]))
+    print("真人化判定: %s" % ("[OK] 通过" if v["ok"] else "[FAIL] 失败: %s" % v["failures"]))
     for k, ok in v["checks"].items():
-        print("  %s %s" % ("✓" if ok else "✗", k))
+        print("  %s %s" % ("[OK]" if ok else "[FAIL]", k))
 
     _hr("四个独立机制")
     print("1. entropy.py   熵源统一管理（本文件）—— 种子、可复现开关")
     print("2. kinetics.py  非对称速度曲线 —— 快加速、慢减速")
     print("3. tremor.py    8-12Hz 低频相关噪声 —— 不是白噪声")
-    print("4. submove.py   多段子运动 —— 冲刺 → 修正 → 微调")
+    print("4. submove.py   多段子运动 —— 冲刺 -> 修正 -> 微调")
     print()
     print("每个机制都可以单独关闭看效果：")
     print("  · 关分段：submove.plan_movement(..., human=False)")
@@ -883,7 +883,7 @@ def cmd_web_open(a):
     try:
         sess, browser, proc = _open_web(a)
     except Exception as exc:      # noqa: BLE001
-        print("✗ 建立会话失败：%s: %s" % (type(exc).__name__, exc),
+        print("[FAIL] 建立会话失败：%s: %s" % (type(exc).__name__, exc),
               file=sys.stderr)
         return 12
 
@@ -946,7 +946,7 @@ def cmd_web_click(a):
     try:
         sess, browser, proc = _open_web(a)
     except Exception as exc:      # noqa: BLE001
-        print("✗ 建立会话失败：%s: %s" % (type(exc).__name__, exc),
+        print("[FAIL] 建立会话失败：%s: %s" % (type(exc).__name__, exc),
               file=sys.stderr)
         return 12
 
@@ -956,7 +956,7 @@ def cmd_web_click(a):
         if pre.unknown:
             print("⚠ 元素可见性未知：%s" % pre.reason)
         elif pre.failed:
-            print("✗ 元素不可见或不存在：%s" % pre.reason, file=sys.stderr)
+            print("[FAIL] 元素不可见或不存在：%s" % pre.reason, file=sys.stderr)
             return 4
 
         res = I.click(sess, a.selector, button=a.button, clicks=a.clicks)
@@ -985,7 +985,7 @@ def cmd_web_click(a):
                 return 5
         return 0
     except Exception as exc:      # noqa: BLE001
-        print("✗ 点击失败：%s: %s" % (type(exc).__name__, exc), file=sys.stderr)
+        print("[FAIL] 点击失败：%s: %s" % (type(exc).__name__, exc), file=sys.stderr)
         return 4
     finally:
         _quiet_close(sess)
@@ -1001,13 +1001,13 @@ def cmd_web_eval(a):
         with open(a.file, "r", encoding="utf-8") as f:
             script = f.read()
     if not script:
-        print("✗ 需要 --js 或 --file", file=sys.stderr)
+        print("[FAIL] 需要 --js 或 --file", file=sys.stderr)
         return 2
 
     try:
         sess, browser, proc = _open_web(a)
     except Exception as exc:      # noqa: BLE001
-        print("✗ 建立会话失败：%s: %s" % (type(exc).__name__, exc),
+        print("[FAIL] 建立会话失败：%s: %s" % (type(exc).__name__, exc),
               file=sys.stderr)
         return 12
 
@@ -1021,7 +1021,7 @@ def cmd_web_eval(a):
             return 0 if got else 10
 
         if not got:
-            print("✗ 求值失败：%s" % err, file=sys.stderr)
+            print("[FAIL] 求值失败：%s" % err, file=sys.stderr)
             return 10
         if isinstance(value, (dict, list)):
             import json as _j
@@ -1047,7 +1047,7 @@ def cmd_electron_attach(a):
     elif a.process:
         wins = EL.find_electron_windows(process_names=[a.process])
         if not wins:
-            print("✗ 没找到进程 %s 的窗口" % a.process, file=sys.stderr)
+            print("[FAIL] 没找到进程 %s 的窗口" % a.process, file=sys.stderr)
             print("  提示：跑 avatar web opts 看有哪些 Electron 窗口")
             return 4
         target = wins[0]
@@ -1056,7 +1056,7 @@ def cmd_electron_attach(a):
     else:
         wins = EL.find_electron_windows()
         if not wins:
-            print("✗ 没检测到 Electron 窗口", file=sys.stderr)
+            print("[FAIL] 没检测到 Electron 窗口", file=sys.stderr)
             return 4
         target = wins[0]
         print("自动选中  : hwnd=%s %s" % (target.get("hwnd"),
@@ -1067,11 +1067,11 @@ def cmd_electron_attach(a):
                                   pid=target.get("pid"),
                                   process_name=target.get("process"))
     except Exception as exc:      # noqa: BLE001
-        print("✗ 附加失败：%s: %s" % (type(exc).__name__, exc), file=sys.stderr)
+        print("[FAIL] 附加失败：%s: %s" % (type(exc).__name__, exc), file=sys.stderr)
         return 12
 
     if sess is None:
-        print("✗ 目标没开调试端口，无法用 CDP 附加")
+        print("[FAIL] 目标没开调试端口，无法用 CDP 附加")
         print("  原因：Electron 应用默认不开 --remote-debugging-port")
         print("  办法一：启动时加参数")
         print("      YourApp.exe --remote-debugging-port=9222")
@@ -1097,7 +1097,7 @@ def cmd_electron_attach(a):
             }, ensure_ascii=False, indent=2, default=str))
             return 0
 
-        print("✓ 已通过 CDP 附加")
+        print("[OK] 已通过 CDP 附加")
         print("窗口      : hwnd=%s" % target.get("hwnd"))
         print("页面数    : %d" % len(pages))
         if a.eval:
@@ -1166,7 +1166,7 @@ def cmd_verify(a):
             sess, browser, proc = _open_web(a)
             kw["session"] = sess
         except Exception as exc:      # noqa: BLE001
-            print("✗ 建立 Web 会话失败：%s: %s" % (type(exc).__name__, exc),
+            print("[FAIL] 建立 Web 会话失败：%s: %s" % (type(exc).__name__, exc),
                   file=sys.stderr)
             return 12
 
@@ -1193,7 +1193,7 @@ def cmd_verify(a):
         judge_keys = ("selector", "url_contains", "expect_text",
                       "expect_value", "verify_window_title", "expect_exists")
         if not any(k in kw for k in judge_keys):
-            print("✗ 没给任何验证判据。至少要给一样：", file=sys.stderr)
+            print("[FAIL] 没给任何验证判据。至少要给一样：", file=sys.stderr)
             for k in judge_keys:
                 print("    --%s" % k.replace("_", "-"), file=sys.stderr)
             return 2
@@ -1264,7 +1264,7 @@ def cmd_electron_windows(a):
         if w.get("port"):
             print("        调试端口 %s" % w["port"])
     print()
-    print("共 %d 个（CDP✓ 的可用 web 通道控制，其余走 UIA）" % len(wins))
+    print("共 %d 个（CDP[OK] 的可用 web 通道控制，其余走 UIA）" % len(wins))
     return 0
 
 
@@ -1368,7 +1368,7 @@ def cmd_detect(a):
             session = _connect_web(a.cdp_port)
             url = getattr(session, "url", "") or ""
         except Exception as exc:      # noqa: BLE001
-            print("✗ 连不上 CDP 端口 %s：%s" % (a.cdp_port, exc),
+            print("[FAIL] 连不上 CDP 端口 %s：%s" % (a.cdp_port, exc),
                   file=sys.stderr)
             return 2
 
@@ -1386,7 +1386,7 @@ def cmd_detect(a):
                 st = DET.detect(hwnd=hwnd or None, cdp_session=session,
                                 timeout=timeout, url=url)
             except Exception as exc:      # noqa: BLE001
-                print("✗ 检测失败：%s: %s" % (type(exc).__name__, exc),
+                print("[FAIL] 检测失败：%s: %s" % (type(exc).__name__, exc),
                       file=sys.stderr)
                 return 2
             el = _t.perf_counter() - t0
@@ -1418,7 +1418,7 @@ def cmd_detect(a):
             elif not watch:
                 if not getattr(a, "json", False):
                     print()
-                    print("  ✓ 干净，可以放心动作")
+                    print("  [OK] 干净，可以放心动作")
                 return 0
 
             if watch:
@@ -1461,7 +1461,7 @@ def cmd_pause_test(a):
 
     if not env.get("desktop"):
         print("⚠ 当前没有可用桌面 —— 会走**退化路径**：")
-        print("  写日志 → 等固定超时 → 抛 HumanInterventionTimeout")
+        print("  写日志 -> 等固定超时 -> 抛 HumanInterventionTimeout")
         print("  不会响铃、不会轮询热键（那在没有桌面的环境里不可靠）")
     else:
         print("请听提示音，然后**按 F9** 表示'我处理完了'。")
@@ -1481,7 +1481,7 @@ def cmd_pause_test(a):
         )
     except G.HumanInterventionTimeout as exc:
         print()
-        print("✗ 超时：%s" % exc)
+        print("[FAIL] 超时：%s" % exc)
         print("  等了 %.1fs（上限 %.1fs），退化路径=%s"
               % (exc.waited, exc.limit, exc.is_degraded))
         ctx = getattr(exc, "context", None)
@@ -1499,7 +1499,7 @@ def cmd_pause_test(a):
         return 1
 
     print()
-    print("✓ 收到 F9 —— 模拟'人处理完了'。")
+    print("[OK] 收到 F9 —— 模拟'人处理完了'。")
     print("  等了 %.1fs，退化路径=%s" % (out["waited"], out["degraded"]))
     print("  现场截图：%s" % (out.get("screenshot") or "(未截图)"))
     print()
@@ -1533,7 +1533,7 @@ def cmd_solver(a):
     print("%-34s %s" % ("检查项", "结果"))
     print("-" * 66)
     for name, ok, detail in checks:
-        print("%-34s %s%s" % (name, "✓" if ok else "✗",
+        print("%-34s %s%s" % (name, "[OK]" if ok else "[FAIL]",
                               ("  " + detail) if detail else ""))
 
     if not enabled:
@@ -1543,7 +1543,7 @@ def cmd_solver(a):
         return 1
 
     print()
-    print("✓ 配置看起来是完整的。")
+    print("[OK] 配置看起来是完整的。")
     print("  注意：这里**没有真的发请求**（--test 只做本地校验）。")
     print("  要真实验证，跑一次带 enabled=True 的 solve_captcha_via_api。")
     return 0
@@ -1656,7 +1656,7 @@ def cmd_plan(a):
     """生成 Plan 并打印 DAG。**不执行任何动作。**"""
     plan, err = _build_plan(a)
     if plan is None:
-        print("✗ %s" % err, file=sys.stderr)
+        print("[FAIL] %s" % err, file=sys.stderr)
         return 2
 
     if getattr(a, "json", False):
@@ -1667,7 +1667,7 @@ def cmd_plan(a):
     _hr("执行计划（DAG）")
     print(plan.describe())
     print()
-    print("拓扑序：%s" % " → ".join(plan.topological_order()))
+    print("拓扑序：%s" % " -> ".join(plan.topological_order()))
     ready = plan.ready_steps()
     print("初始可执行（可并行）：%s" % (", ".join(ready) or "（无）"))
     print()
@@ -1681,7 +1681,7 @@ def cmd_run(a):
 
     plan, err = _build_plan(a)
     if plan is None:
-        print("✗ %s" % err, file=sys.stderr)
+        print("[FAIL] %s" % err, file=sys.stderr)
         return 2
 
     if getattr(a, "dry_run", False):
@@ -1737,7 +1737,7 @@ def cmd_tasks(a):
         try:
             mem = MEM.ShortTermMemory.load(tid)
         except Exception as exc:      # noqa: BLE001
-            print("✗ %s" % exc, file=sys.stderr)
+            print("[FAIL] %s" % exc, file=sys.stderr)
             return 2
         print(mem.summary())
         print()
@@ -1757,7 +1757,7 @@ def cmd_tasks(a):
         try:
             mem = MEM.ShortTermMemory.load(tid)
         except Exception as exc:      # noqa: BLE001
-            print("✗ %s" % exc, file=sys.stderr)
+            print("[FAIL] %s" % exc, file=sys.stderr)
             return 2
         if getattr(a, "json", False):
             import json
@@ -1810,7 +1810,7 @@ def cmd_vision_chain(a):
 
     text = str(getattr(a, "text", "") or "")
     if not text:
-        print("✗ 必须给 --text", file=sys.stderr)
+        print("[FAIL] 必须给 --text", file=sys.stderr)
         return 2
 
     hwnd = _parse_hwnd(a) if getattr(a, "hwnd", None) else 0
@@ -1878,7 +1878,7 @@ def cmd_vision_llm(a):
 
     goal = str(getattr(a, "goal", "") or "")
     if not goal:
-        print("✗ 必须给 --goal", file=sys.stderr)
+        print("[FAIL] 必须给 --goal", file=sys.stderr)
         return 2
 
     # ---- 造后端 ----
@@ -1891,7 +1891,7 @@ def cmd_vision_llm(a):
             model=str(getattr(a, "model", "") or ""),
             enabled=bool(getattr(a, "enabled", False)))
     except ValueError as exc:
-        print("✗ %s" % exc, file=sys.stderr)
+        print("[FAIL] %s" % exc, file=sys.stderr)
         return 2
 
     _hr("视觉大模型定位")
@@ -1906,7 +1906,7 @@ def cmd_vision_llm(a):
     if img_path:
         import os as _os
         if not _os.path.isfile(img_path):
-            print("✗ 图片不存在：%s" % img_path, file=sys.stderr)
+            print("[FAIL] 图片不存在：%s" % img_path, file=sys.stderr)
             return 2
         with open(img_path, "rb") as f:
             img_bytes = f.read()
@@ -1918,7 +1918,7 @@ def cmd_vision_llm(a):
         try:
             shot = C.grab_screen()
         except Exception as exc:      # noqa: BLE001
-            print("✗ 抓屏失败：%s" % exc, file=sys.stderr)
+            print("[FAIL] 抓屏失败：%s" % exc, file=sys.stderr)
             return 2
         prepared = IP.prepare_for_llm(shot, max_edge=int(
             getattr(a, "max_edge", 1280) or 1280))
@@ -1929,7 +1929,7 @@ def cmd_vision_llm(a):
                      prepared.width, prepared.height, prepared.scale,
                      prepared.est_tokens))
     else:
-        print("✗ 必须给 --image 或 --live", file=sys.stderr)
+        print("[FAIL] 必须给 --image 或 --live", file=sys.stderr)
         return 2
 
     print("目标：%r" % goal)
@@ -1959,7 +1959,7 @@ def cmd_vision_llm(a):
                 len(_json.dumps(payload, ensure_ascii=False)) - 1200)
         print(body)
         print()
-        print("图片格式：%s（%d 字节 → base64 约 %d 字节）"
+        print("图片格式：%s（%d 字节 -> base64 约 %d 字节）"
               % (mime, len(img_bytes), (len(img_bytes) * 4 + 2) // 3))
         print()
         print("★ 上面是**完整请求构造**，一个字节都没发出去。")
@@ -1969,7 +1969,7 @@ def cmd_vision_llm(a):
 
     # ---- 真实调用 ----
     if not backend.active:
-        print("✗ 后端不可用：%s" % backend.unavailable_reason(),
+        print("[FAIL] 后端不可用：%s" % backend.unavailable_reason(),
               file=sys.stderr)
         print("  提示：set AVATAR_LLM_API_KEY=sk-... 然后加 --enabled",
               file=sys.stderr)
@@ -1991,7 +1991,7 @@ def cmd_vision_llm(a):
     try:
         budget.require(est + 500)
     except CO.CostExceeded as exc:
-        print("✗ %s" % exc, file=sys.stderr)
+        print("[FAIL] %s" % exc, file=sys.stderr)
         return 2
 
     res = backend.locate(img_bytes, goal, system=system, user=user,
@@ -2004,7 +2004,7 @@ def cmd_vision_llm(a):
     print(res.describe())
     print()
     if not res.ok:
-        print("✗ 调用失败：%s" % res.reason, file=sys.stderr)
+        print("[FAIL] 调用失败：%s" % res.reason, file=sys.stderr)
         return 1
     if not res.found:
         print("· 模型说没找到：%s" % (res.reason or "无说明"))
@@ -2023,9 +2023,9 @@ def cmd_vision_llm(a):
         print("  %s" % g.describe())
     print()
     if validated is None:
-        print("✗ 校验未通过 —— **不降级到盲点**")
+        print("[FAIL] 校验未通过 —— **不降级到盲点**")
         return 1
-    print("✓ 校验通过：屏幕坐标 (%d, %d)" % (validated.screen_x,
+    print("[OK] 校验通过：屏幕坐标 (%d, %d)" % (validated.screen_x,
                                              validated.screen_y))
     print()
     print(budget.describe())
@@ -2040,7 +2040,7 @@ def cmd_llm_plan(a):
 
     goal_txt = str(getattr(a, "goal", "") or "")
     if not goal_txt:
-        print("✗ 必须给 --goal", file=sys.stderr)
+        print("[FAIL] 必须给 --goal", file=sys.stderr)
         return 2
 
     provider = str(getattr(a, "provider", "openai") or "openai")
@@ -2058,7 +2058,7 @@ def cmd_llm_plan(a):
 
     g = parse_goal(goal_txt)
     if not g.ok:
-        print("✗ 目标无法解析：%s" % g.intent, file=sys.stderr)
+        print("[FAIL] 目标无法解析：%s" % g.intent, file=sys.stderr)
         return 2
 
     plan = planner.plan(g)
@@ -2072,7 +2072,7 @@ def cmd_llm_plan(a):
     if planner.last_fallback_reason:
         print("⚠ 回退到规则版：%s" % planner.last_fallback_reason)
     else:
-        print("✓ LLM 规划成功（规划器：%s）" % plan.planner)
+        print("[OK] LLM 规划成功（规划器：%s）" % plan.planner)
     return 0
 
 
@@ -2142,8 +2142,8 @@ def cmd_mcp_test(a):
     n_list = len(((r_list or {}).get("result") or {}).get("tools") or [])
 
     print("协议自测：")
-    print("  %s initialize 握手" % ("✓" if ok_init else "✗"))
-    print("  %s tools/list 返回 %d 个工具" % ("✓" if n_list == len(reg) else "✗",
+    print("  %s initialize 握手" % ("[OK]" if ok_init else "[FAIL]"))
+    print("  %s tools/list 返回 %d 个工具" % ("[OK]" if n_list == len(reg) else "[FAIL]",
                                               n_list))
     print()
 
@@ -2508,7 +2508,7 @@ def main(argv=None) -> int:
     try:
         return args.func(args) or 0
     except AvatarError as e:
-        print("✗ %s" % e, file=sys.stderr)
+        print("[FAIL] %s" % e, file=sys.stderr)
         return e.exit_code
     except KeyboardInterrupt:
         print("\n已取消", file=sys.stderr)

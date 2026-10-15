@@ -534,7 +534,7 @@ def main():
         path = os.path.join(OUT, name)
         with open(path, "w", encoding="utf-8") as f:
             f.write(html)
-    print("生成 %d 个样本 → %s" % (len(PAGES), OUT))
+    print("生成 %d 个样本 -> %s" % (len(PAGES), OUT))
 
 
 if __name__ == "__main__":

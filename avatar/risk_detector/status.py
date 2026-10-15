@@ -865,7 +865,7 @@ def _main() -> int:
     import sys
     r = selfcheck()
     for c in r["checks"]:
-        print("  %s %-42s %s" % ("✓" if c["ok"] else "✗", c["name"], c["detail"]))
+        print("  %s %-42s %s" % ("[OK]" if c["ok"] else "[FAIL]", c["name"], c["detail"]))
     print("status 自检：%d/%d 通过，%.3fs"
           % (len(r["checks"]) - len(r["failures"]), len(r["checks"]), r["elapsed"]))
     return 0 if r["ok"] else 1

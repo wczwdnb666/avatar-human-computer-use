@@ -35,7 +35,7 @@ def main(argv=None) -> int:
                len(r["checks"]), len(r["failures"])))
         for c in r["checks"]:
             sys.stderr.write("  %s %-20s %s\n"
-                             % ("✓" if c["ok"] else "✗", c["name"],
+                             % ("[OK]" if c["ok"] else "[FAIL]", c["name"],
                                 c["detail"]))
         for f in r["failures"]:
             sys.stderr.write("  FAIL %s\n" % f)

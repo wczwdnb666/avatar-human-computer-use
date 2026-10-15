@@ -56,15 +56,19 @@ jobs:
           txt = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
           m = re.search(r'^version\s*=\s*"([^"]+)"', txt, re.M)
           if not m:
-              print("✗ pyproject.toml 里找不到 version")
+              print("[FAIL] pyproject.toml 里找不到 version")
               sys.exit(1)
           if m.group(1) != tag_ver:
-              print("✗ 版本不一致：pyproject=%s tag=%s" % (m.group(1), tag_ver))
+              print("[FAIL] 版本不一致：pyproject=%s tag=%s" % (m.group(1), tag_ver))
               print("  先把 pyproject.toml 的版本改成 %s 再打 tag" % tag_ver)
               sys.exit(1)
-          print("✓ 版本一致：%s" % tag_ver)
+          print("[OK] 版本一致：%s" % tag_ver)
           PY
         env:
+          # ★ Windows runner 的 Python stdout 默认 cp1252，
+          #   打印 `✓` / `✗` 会抛 UnicodeEncodeError 把 Release 打红。
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
           TAG: ${{ steps.ver.outputs.tag }}
 
       - name: 从 CHANGELOG 提取本次发布说明

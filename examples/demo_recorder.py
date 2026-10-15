@@ -372,7 +372,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("  － %-6s %s（跳过，需要 --with-gui）" % (c.key, c.title))
             results.append(r)
             continue
-        print("  → %-6s %s ..." % (c.key, c.title), end="", flush=True)
+        print("  -> %-6s %s ..." % (c.key, c.title), end="", flush=True)
         r = run_case(c)
         print(" %s（%.1fs）" % ("通过" if r.ok else "失败", r.elapsed))
         results.append(r)
