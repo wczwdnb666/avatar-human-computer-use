@@ -1,0 +1,134 @@
+name: CI
+
+# 什么时候跑
+on:
+  push:
+    branches: ["main", "master", "develop"]
+  pull_request:
+    branches: ["main", "master", "develop"]
+  workflow_dispatch:        # 允许手动触发
+
+# 同一分支的新提交取消旧任务 —— 省 CI 额度
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      # 一个版本挂了不要让其他版本被取消 ——
+      # 要看全貌才知道是"某个版本特有"还是"全挂"
+      fail-fast: false
+
+      matrix:
+        os: [windows-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # ★ 本项目**零第三方依赖** —— 不装任何包。
+      #   这一条本身就是 CI 要验证的东西：如果哪天有人加了依赖，
+      #   这里会因为 ImportError 红掉。
+      - name: 验证零依赖
+        shell: bash
+        run: |
+          echo "=== 检查是否引入了第三方依赖 ==="
+          python -c "
+          import ast, pathlib, sys
+          BANNED = {
+              'requests','httpx','aiohttp','openai','anthropic','litellm',
+              'PIL','cv2','numpy','pytesseract','paddleocr','easyocr',
+              'win32com','comtypes','pywin32','clr','pydantic','anyio',
+              'pytest','pytest_mock','pytest_asyncio','unittest_mock',
+          }
+          bad = []
+          # ★ 两个包都要扫：avatar/ 是主包，avatar_shell/ 是独立外壳。
+          #   外壳同样必须零依赖（硬约束 1：不引入 UI 框架）。
+          files = (list(pathlib.Path('avatar').rglob('*.py'))
+                   + list(pathlib.Path('avatar_shell').rglob('*.py')))
+          for p in files:
+              tree = ast.parse(p.read_text(encoding='utf-8'))
+              for n in ast.walk(tree):
+                  names = []
+                  if isinstance(n, ast.Import):
+                      names = [(a.name or '').split('.')[0] for a in n.names]
+                  elif isinstance(n, ast.ImportFrom) and n.level == 0:
+                      names = [(n.module or '').split('.')[0]]
+                  for nm in names:
+                      if nm in BANNED:
+                          bad.append('%s: %s' % (p, nm))
+          if bad:
+              print('✗ 发现第三方依赖：')
+              for b in bad[:20]:
+                  print('  ' + b)
+              sys.exit(1)
+          print('✓ 零第三方依赖（扫描 %d 个文件）' % len(files))
+          "
+
+      # ★ pytest 是**唯一的开发期依赖**。
+      #
+      #   「零依赖」指的是**运行期**：`dependencies = []`，装完即用。
+      #   跑测试当然需要测试框架 —— 这里显式装，不藏着。
+      #
+      #   ⚠ 必须显式装：`actions/setup-python` 装出来的解释器**不带**
+      #   pytest（runner 自带的那个 Python 才有）。少了这一步，
+      #   后面所有 `python -m pytest` 都会以 "No module named pytest" 红掉。
+      - name: 安装开发期依赖（只有 pytest）
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+
+      - name: 模块自检 + 硬约束
+        shell: bash
+        run: |
+          python scripts/selfcheck.py
+
+      - name: 全量测试
+        shell: bash
+        # ★ 失败即红（硬约束 5）
+        run: |
+          python -m pytest tests/ -q --no-header
+
+      # ⚠ 下面两步跟上面的「全量测试」**有意重叠**：
+      #   `tests/` 已经包含 `test_phase9_shell.py`，`scripts/selfcheck.py`
+      #   也已经包含四个外壳模块的自检。再单独跑一遍，是为了让外壳
+      #   出问题时**日志一眼可见** —— 混在全量里报错得翻好几屏。
+      - name: 外壳自检（独立包）
+        shell: bash
+        run: |
+          python -m avatar_shell --selftest
+
+      - name: 外壳测试
+        shell: bash
+        run: |
+          python -m pytest tests/test_phase9_shell.py -q --no-header
+
+  # ----------------------------------------------------------------
+  # 一个汇总 job —— 分支保护只需要勾这一个
+  # ----------------------------------------------------------------
+  ci-ok:
+    name: CI 通过
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: always()
+    steps:
+      - name: 检查所有矩阵任务
+        shell: bash
+        run: |
+          # needs.test 的结果是矩阵的汇总：全成功才是 success
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "✗ 测试矩阵未全部通过：${{ needs.test.result }}"
+            exit 1
+          fi
+          echo "✓ 全部通过"

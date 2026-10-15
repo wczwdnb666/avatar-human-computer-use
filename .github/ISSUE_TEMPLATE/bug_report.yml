@@ -1,0 +1,108 @@
+name: Bug 报告
+description: 报告一个可复现的问题
+title: "[Bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。**请先跑一遍自检** —— 它会把大部分环境问题直接指出来：
+
+        ```bash
+        python scripts/selfcheck.py
+        ```
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 一句话说清现象。不要写"不工作"这种含糊的描述。
+      placeholder: "执行 `avatar run --goal \"打开记事本\"` 时，记事本没打开，但输出说成功了"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expect
+    attributes:
+      label: 你期望什么
+      placeholder: "记事本窗口应该弹出"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: |
+        请给出**能直接跑的命令**。如果涉及多个步骤，按顺序列出来。
+      placeholder: |
+        1. python -m avatar run --goal "打开记事本输入hello"
+        2. 观察输出
+        3. 看到 "✓ 任务完成" 但记事本没开
+    validations:
+      required: true
+
+  - type: textarea
+    id: selfcheck
+    attributes:
+      label: 自检输出
+      description: |
+        把 `python scripts/selfcheck.py` 的**最后 20 行**贴在这里。
+        **这一项能省掉一半的来回。**
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: "`python -m avatar --version` 或 git commit hash"
+      placeholder: "v0.1.0 / a1b2c3d"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python 版本
+      description: "`python -V`"
+      placeholder: "Python 3.13.14"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows 11
+        - Windows 10
+        - Windows Server
+        - 其他（请在下面说明）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: dpi
+    attributes:
+      label: 显示器缩放
+      description: |
+        DPI 相关的问题很多，请如实填。可以在「设置 → 显示 → 缩放」里看。
+      options:
+        - 100%
+        - 125%
+        - 150%
+        - 175%
+        - 200%
+        - 不知道
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 截图、日志、你觉得可能有用的任何东西。
+    validations:
+      required: false

@@ -1,0 +1,20 @@
+# 赞助配置
+#
+# 取消注释你用的平台即可。留空则 README 不显示 Sponsor 按钮。
+#
+# 说明：本项目**零依赖**、无服务器成本，赞助主要用于
+# 覆盖测试机（多显示器 / 多 DPI 环境）与视觉大模型的调用开销。
+
+# github: [wczwdnb666]
+# patreon: # 替换成你的用户名
+# open_collective: # 替换成你的 slug
+# ko_fi: # 替换成你的用户名
+# tidelift: # 如 npm/package-name
+# community_bridge: # 替换成你的项目名
+# liberapay: # 替换成你的用户名
+# issuehunt: # 替换成你的用户名
+# lfx_crowdfunding: # 替换成你的项目名
+# polar: # 替换成你的用户名
+# buy_me_a_coffee: # 替换成你的用户名
+# thanks_dev: # 替换成你的用户名
+# custom: ["https://example.com/donate"]

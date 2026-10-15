@@ -1,0 +1,19 @@
+# Issue 模板配置
+#
+# blank_issues_enabled: false 会**禁用**"空白 issue"，
+# 强制走模板。这样能保证每个 issue 都带上了排查所需的信息
+# （自检输出、Python 版本、DPI 缩放）—— 省掉大量来回。
+blank_issues_enabled: false
+
+contact_links:
+  - name: 使用问题 / 讨论
+    url: https://github.com/wczwdnb666/avatar-human-computer-use/discussions
+    about: 不确定是不是 bug？想聊架构？去 Discussions。
+
+  - name: 安全漏洞（**不要开公开 issue**）
+    url: https://github.com/wczwdnb666/avatar-human-computer-use/security/advisories/new
+    about: 安全问题请走私密渠道，见 SECURITY.md。
+
+  - name: 先跑自检
+    url: https://github.com/wczwdnb666/avatar-human-computer-use#自检
+    about: 大部分环境问题自检会直接指出来。

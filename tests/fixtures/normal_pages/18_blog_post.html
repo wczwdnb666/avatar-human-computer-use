@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>如何用 Python 处理 CSV 大文件 - 技术博客</title>
+</head>
+<body>
+
+<header><a href="/">技术博客</a> <a href="/login">登录</a></header>
+<main>
+  <h1>如何用 Python 处理 CSV 大文件</h1>
+  <p class="meta">作者：张伟　2026-09-28　阅读 12480</p>
+  <article>
+    <p>当 CSV 文件超过内存容量时，直接 <code>pd.read_csv</code> 会撑爆内存。
+       本文介绍三种实用的流式处理方式。</p>
+    <h2>方法一：分块读取</h2>
+    <p>pandas 的 <code>chunksize</code> 参数可以把文件切成若干块，
+       每块处理完就释放，内存占用可控。</p>
+    <h2>方法二：csv 模块逐行处理</h2>
+    <p>标准库的 csv 模块最省内存，适合只需要做简单聚合的场景。</p>
+    <h2>方法三：先转成 Parquet</h2>
+    <p>如果同一份数据要反复查询，先转成列式存储再处理，速度会有明显提升。</p>
+    <h2>小结</h2>
+    <p>没有万能方案。文件小于 2GB 用分块足够；需要复杂计算建议先转 Parquet。</p>
+  </article>
+  <section class="comments">
+    <h2>评论（3）</h2>
+    <p>写得清楚，方法三我一直在用。</p>
+    <p>补充一点：注意编码问题，有些 CSV 是 GBK。</p>
+  </section>
+</main>
+<footer>
+  <a href="/terms">服务条款</a> <a href="/privacy">隐私政策</a>
+  <a href="/about">关于我们</a> <a href="/contact">联系我们</a>
+  <p>版权所有 © 2026 技术博客</p>
+</footer>
+</body>
+</html>

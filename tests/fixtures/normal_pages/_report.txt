@@ -1,0 +1,47 @@
+正常页面误报率报告（text 层）
+====================================================================================================
+生成时间：2026-10-07 07:09:17
+样本目录：tests/fixtures/normal_pages/（20 个）
+
+样本                             score 误报    reason                  清零后 误报    弱词分档
+----------------------------------------------------------------------------------------------------
+01_shop_home.html              -2.70       no_fingerprint         0.00       {'footer': 9}
+02_shop_product.html           -2.40       no_fingerprint         0.00       {'footer': 8}
+03_shop_cart.html              -2.10       no_fingerprint         0.00       {'footer': 7}
+04_shop_checkout.html          -2.55       no_fingerprint        -0.15       {'footer': 8, 'ambiguous': 1}
+05_news_article.html           -2.10       no_fingerprint         0.00       {'footer': 7}
+06_news_list.html              -2.10       no_fingerprint         0.00       {'footer': 7}
+07_login.html                  -2.85       no_fingerprint        -0.15       {'ambiguous': 1, 'footer': 9}
+08_register.html                0.30       below_threshold        2.70 ★     {'footer': 8, 'ambiguous': 2}
+09_forgot_password.html        -1.75       below_threshold        0.65       {'footer': 8, 'ambiguous': 1}
+10_form_contact.html           -0.40       below_threshold        1.70 ★     {'footer': 7, 'ambiguous': 2}
+11_privacy_policy.html         -2.70       no_fingerprint         0.00       {'footer': 9}
+12_terms_of_service.html       -3.15       no_fingerprint        -0.15       {'footer': 10, 'ambiguous': 1}
+13_help_center.html            -2.25       no_fingerprint        -0.15       {'footer': 7, 'ambiguous': 1}
+14_error_404.html              -2.10       no_fingerprint         0.00       {'footer': 7}
+15_about_us.html               -2.10       no_fingerprint         0.00       {'footer': 7}
+16_bank_dashboard.html          2.65 ★     hit                    5.05 ★     {'footer': 8, 'ambiguous': 1}
+17_corp_home.html              -2.40       no_fingerprint         0.00       {'footer': 8}
+18_blog_post.html              -2.10       no_fingerprint         0.00       {'footer': 7}
+19_jobs_page.html              -2.10       no_fingerprint         0.00       {'footer': 7}
+20_docs_page.html              -2.15       no_fingerprint        -0.05       {'footer': 7, 'ocr_noise': 1}
+----------------------------------------------------------------------------------------------------
+误报率          ：1/20 = 5.0%（上限 1 个 / 5%）
+清零 footer 后  ：3/20 = 15.0%   ← 消融对比（必须上升）
+
+消融：footer 档清零后多出的误报 —— 说明这些样本原本是被页脚反证压住的
+（这一档确实在干活，不是摆设）
+  + 08_register.html           0.30 → 2.70
+  + 10_form_contact.html       -0.40 → 1.70
+
+命中明细（原版）
+----------------------------------------------------------------------------------------------------
+  08_register.html           txt.zh.get_code(1.2), txt.zh.verify_code(0.8)
+  09_forgot_password.html    txt.zh.verify_code(0.8)
+  10_form_contact.html       txt.zh.click_according(1.0)
+  16_bank_dashboard.html     txt.zh.sms_code(1.4), txt.zh.risk_control(1.0), txt.zh.abnormal(1.0), txt.zh.verify_code(0.8)
+
+已知误报（刻意保留，未调参压掉）
+----------------------------------------------------------------------------------------------------
+  · 16_bank_dashboard.html
+    银行安全提示里的「风险控制/操作异常/短信验证码」被当成风险信号。根因是这几条指纹没考虑金融类正常页面 —— 建议按「在正常页面的普遍程度」原则降权。

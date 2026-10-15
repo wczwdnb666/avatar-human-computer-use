@@ -1,0 +1,16 @@
+{
+  "_comment": "把下面这段合并进 Claude Desktop 的配置。Windows 路径：%APPDATA%\\Claude\\claude_desktop_config.json",
+  "_comment2": "cwd 和 PYTHONPATH 都指向仓库根目录，两处都要改成本机实际路径。",
+  "mcpServers": {
+    "avatar": {
+      "command": "python",
+      "args": ["-m", "avatar.mcp"],
+      "cwd": "C:/github/avatar-human-computer-use",
+      "env": {
+        "PYTHONPATH": "C:/github/avatar-human-computer-use",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}

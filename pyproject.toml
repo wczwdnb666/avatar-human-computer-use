@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "avatar-human-computer-use"
+version = "0.1.0"
+description = "Avatar —— 让 AI 以人类形式操纵电脑。除了必要，全是自动。"
+readme = "README.md"
+# ⚠ 最低版本以 **CI 实测过的**为准，不写没测过的。
+#   写 3.9 会让 3.9 用户以为被支持，实际上 CI 里根本没有 3.9 这一格。
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Avatar contributors" }]
+keywords = [
+    "computer-use", "automation", "rpa", "ui-automation", "cdp",
+    "human-like", "agent", "windows", "desktop-automation",
+    "windows-automation", "ai-agent", "llm-agent", "mcp",
+    "model-context-protocol", "ctypes", "win32", "winrt",
+    "zero-dependency", "accessibility", "ocr",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
+
+# 核心零依赖：纯 ctypes 调 Win32。
+#
+# ⚠ 这里是**运行期**依赖 —— 空列表是刻意的，CI 会用 AST 扫描守着它。
+#   测试需要 pytest，但那是开发期依赖，不属于这里（见 CONTRIBUTING.md）。
+dependencies = []
+
+[project.optional-dependencies]
+# 可选增强。**装了更好，不装也能跑** —— 缺失时对应能力自动降级，
+# 不影响主链路。这是"零依赖"与"能用现成轮子"之间的折中。
+uia = ["uiautomation>=2.0"]
+vision = ["Pillow>=9.0"]
+ocr = ["pytesseract>=0.3"]
+web = ["websocket-client>=1.6"]
+# 开发期：跑测试用。
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+avatar = "avatar.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/wczwdnb666/avatar-human-computer-use"
+Repository = "https://github.com/wczwdnb666/avatar-human-computer-use"
+Issues = "https://github.com/wczwdnb666/avatar-human-computer-use/issues"
+
+[tool.setuptools.packages.find]
+# avatar 是主包；avatar_shell 是**独立外壳包**（不 import 主包，
+# 只通过 stdio / MCP 通信）。两个都要能独立安装。
+include = ["avatar*"]
+
+[tool.ruff]
+# 行宽以 CONTRIBUTING.md 说的为准：**尽量 79，硬上限 100**。
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+# E501 交给人工审 —— 中文注释里的宽字符没法按列数算准，
+# 让 linter 数出来一堆假红只会让人关掉整个检查。
+ignore = ["E501"]

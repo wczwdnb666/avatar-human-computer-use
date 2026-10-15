@@ -1,0 +1,115 @@
+name: Release
+
+# 打 tag 时自动发 Release
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（如 v0.1.0）"
+        required: true
+
+permissions:
+  contents: write      # 创建 Release 需要
+
+jobs:
+  release:
+    name: 创建 Release
+    # ⚠ 必须是 **Windows** —— 这是 Windows 项目。
+    #   下面的自检和测试里有大量 Win32 / WinRT 调用
+    #   （user32 / comtypes / WinRT OCR），在 ubuntu 上会成片失败，
+    #   于是 Release 永远发不出去。
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # 要完整历史才能取 CHANGELOG
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 确定版本号
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "本次发布：$TAG"
+
+      - name: 校验 pyproject 版本与 tag 一致
+        shell: bash
+        run: |
+          python - <<'PY'
+          import re, pathlib, os, sys
+          tag_ver = os.environ["TAG"].lstrip("v")
+          txt = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          m = re.search(r'^version\s*=\s*"([^"]+)"', txt, re.M)
+          if not m:
+              print("✗ pyproject.toml 里找不到 version")
+              sys.exit(1)
+          if m.group(1) != tag_ver:
+              print("✗ 版本不一致：pyproject=%s tag=%s" % (m.group(1), tag_ver))
+              print("  先把 pyproject.toml 的版本改成 %s 再打 tag" % tag_ver)
+              sys.exit(1)
+          print("✓ 版本一致：%s" % tag_ver)
+          PY
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+
+      - name: 从 CHANGELOG 提取本次发布说明
+        id: notes
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib, os, re
+          ver = os.environ["VERSION"]
+          txt = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          # 找 "## [v0.1.0]" 这一段，取到下一个 "## [" 之前
+          pat = re.compile(r"^##\s*\[?v?%s\]?.*?$(.*?)(?=^##\s*\[|\Z)"
+                           % re.escape(ver), re.M | re.S)
+          m = pat.search(txt)
+          body = m.group(1).strip() if m else ""
+          if not body:
+              body = "详见 CHANGELOG.md"
+          pathlib.Path("release_notes.md").write_text(
+              body, encoding="utf-8")
+          print("提取了 %d 字符" % len(body))
+          PY
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+
+      # ⚠ 同 ci.yml：`actions/setup-python` 装的解释器不带 pytest。
+      #   少了这一步，下面的 `python -m pytest` 必然以
+      #   "No module named pytest" 红掉，Release 就发不出去。
+      - name: 安装开发期依赖（只有 pytest）
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+
+      - name: 跑一遍自检（发布前把关）
+        shell: bash
+        run: |
+          python scripts/selfcheck.py
+          python -m pytest tests/ -q --no-header
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: "Avatar ${{ steps.ver.outputs.tag }}"
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          generate_release_notes: true

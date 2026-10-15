@@ -1,0 +1,37 @@
+# CODEOWNERS —— 指定谁负责哪些文件
+#
+# 语法：<模式>  <@用户或@组织/团队>
+# 最后一个匹配的模式生效。
+#
+# 仓库主人：wczwdnb666
+
+# 默认：所有文件
+*                       @wczwdnb666
+
+# ---- 核心层（改动影响面大，需要 owner 过目）----
+/avatar/_win32/         @wczwdnb666
+/avatar/input/          @wczwdnb666
+/avatar/human_entropy/  @wczwdnb666
+
+# ---- 风控（**最高优先级**，改错了会出事）----
+/avatar/risk_detector/  @wczwdnb666
+
+# ---- 规划与执行 ----
+/avatar/agentic_planner/ @wczwdnb666
+
+# ---- 视觉大模型层（涉及外部调用与花钱）----
+/avatar/vision/         @wczwdnb666
+
+# ---- MCP（对外接口，改了会影响所有客户端）----
+/avatar/mcp/            @wczwdnb666
+
+# ---- 外壳（独立包）----
+/avatar_shell/          @wczwdnb666
+
+# ---- CI / 发布 ----
+/.github/               @wczwdnb666
+
+# ---- 文档 ----
+/docs/                  @wczwdnb666
+/README.md              @wczwdnb666
+/CHANGELOG.md           @wczwdnb666

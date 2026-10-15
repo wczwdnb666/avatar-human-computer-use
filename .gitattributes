@@ -1,0 +1,42 @@
+# 换行与文本归一化
+#
+# 本项目在 Windows 上开发，但**必须**能跨平台 clone 后行为一致。
+# 所以：仓库内统一 LF，工作区按平台转换。
+
+# 默认：文本文件自动识别，入库一律 LF
+* text=auto eol=lf
+
+# ---- 必须保持 CRLF 的 ----
+# 批处理文件用 LF 会直接跑不起来。
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# ---- 必须保持原样（二进制）----
+# 这些文件做换行转换会直接损坏。
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.bmp   binary
+*.zip   binary
+*.gz    binary
+*.exe   binary
+*.dll   binary
+*.so    binary
+*.pyd   binary
+*.pyc   binary
+*.wav   binary
+*.woff  binary
+*.woff2 binary
+
+# ---- diff 体验 ----
+# 锁文件不参与 diff（噪音大且无意义）
+*.lock  -diff
+
+# ---- 语言统计 ----
+# 文档不计入代码行数，否则"这个项目到底多少代码"会失真。
+*.md     linguist-documentation
+docs/**  linguist-documentation
+SKILL.md linguist-documentation
+*.yml    linguist-detectable=false

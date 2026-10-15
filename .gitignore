@@ -1,0 +1,62 @@
+# === 凭证与密钥（绝不入库）===
+.env
+*.token
+*.key
+*.pem
+credentials.json
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+*.egg-info/
+
+# === 构建产物 ===
+dist/
+build/
+*.egg
+
+# === 测试与缓存 ===
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# === 运行时产物 ===
+logs/
+*.log
+avatar_trace/
+screenshots/
+*.tmp
+
+# === 熔断现场（5C guard）===
+# 熔断截图默认落在 ~/.avatar/interventions/，**在仓库之外**，
+# 所以这里指的是「有人把 AVATAR_INTERVENTION_DIR 指向仓库内」的情况。
+# 这些文件是给人看的现场快照（可能含账号、验证码、聊天内容），
+# 一律不入库。目录内的 .gitignore 也会自我标记。
+avatar/interventions/
+.avatar/
+interventions/
+
+# === 编辑器 / 系统 ===
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+tools/UIAutomationClient.h
+
+# === 本地 AI 助手工作区 ===
+# 这是**本机**的工作记录（日志、长期记忆），跟项目代码无关，
+# 而且可能含个人环境信息。绝不入库。
+.workbuddy-ai/
+
+# === 演示录制产物 ===
+# demo_recorder.py 跑出来的报告与轨迹图，每次跑内容都不同。
+demo_report.md

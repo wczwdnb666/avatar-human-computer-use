@@ -1,0 +1,207 @@
+{
+  "generated_at": "2026-10-01 06:33:57",
+  "note": "正常页面样本的 text 层打分基线。指纹库改动后请复核并重新生成。",
+  "samples": {
+    "01_shop_home.html": {
+      "score": -2.7,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "footer": 9
+      },
+      "hits": []
+    },
+    "02_shop_product.html": {
+      "score": -2.4,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "footer": 8
+      },
+      "hits": []
+    },
+    "03_shop_cart.html": {
+      "score": -2.1,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "footer": 7
+      },
+      "hits": []
+    },
+    "04_shop_checkout.html": {
+      "score": -2.55,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "footer": 8,
+        "ambiguous": 1
+      },
+      "hits": []
+    },
+    "05_news_article.html": {
+      "score": -2.1,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "footer": 7
+      },
+      "hits": []
+    },
+    "06_news_list.html": {
+      "score": -2.1,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "footer": 7
+      },
+      "hits": []
+    },
+    "07_login.html": {
+      "score": -2.85,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "ambiguous": 1,
+        "footer": 9
+      },
+      "hits": []
+    },
+    "08_register.html": {
+      "score": 0.3,
+      "detected": false,
+      "reason": "below_threshold",
+      "tiers": {
+        "footer": 8,
+        "ambiguous": 2
+      },
+      "hits": [
+        "txt.zh.get_code",
+        "txt.zh.verify_code"
+      ]
+    },
+    "09_forgot_password.html": {
+      "score": -1.75,
+      "detected": false,
+      "reason": "below_threshold",
+      "tiers": {
+        "footer": 8,
+        "ambiguous": 1
+      },
+      "hits": [
+        "txt.zh.verify_code"
+      ]
+    },
+    "10_form_contact.html": {
+      "score": -0.4,
+      "detected": false,
+      "reason": "below_threshold",
+      "tiers": {
+        "footer": 7,
+        "ambiguous": 2
+      },
+      "hits": [
+        "txt.zh.click_according"
+      ]
+    },
+    "11_privacy_policy.html": {
+      "score": -2.7,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "footer": 9
+      },
+      "hits": []
+    },
+    "12_terms_of_service.html": {
+      "score": -3.15,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "footer": 10,
+        "ambiguous": 1
+      },
+      "hits": []
+    },
+    "13_help_center.html": {
+      "score": -2.25,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "footer": 7,
+        "ambiguous": 1
+      },
+      "hits": []
+    },
+    "14_error_404.html": {
+      "score": -2.1,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "footer": 7
+      },
+      "hits": []
+    },
+    "15_about_us.html": {
+      "score": -2.1,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "footer": 7
+      },
+      "hits": []
+    },
+    "16_bank_dashboard.html": {
+      "score": 2.65,
+      "detected": true,
+      "reason": "hit",
+      "tiers": {
+        "footer": 8,
+        "ambiguous": 1
+      },
+      "hits": [
+        "txt.zh.sms_code",
+        "txt.zh.risk_control",
+        "txt.zh.abnormal",
+        "txt.zh.verify_code"
+      ]
+    },
+    "17_corp_home.html": {
+      "score": -2.4,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "footer": 8
+      },
+      "hits": []
+    },
+    "18_blog_post.html": {
+      "score": -2.1,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "footer": 7
+      },
+      "hits": []
+    },
+    "19_jobs_page.html": {
+      "score": -2.1,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "footer": 7
+      },
+      "hits": []
+    },
+    "20_docs_page.html": {
+      "score": -2.15,
+      "detected": false,
+      "reason": "no_fingerprint",
+      "tiers": {
+        "footer": 7,
+        "ocr_noise": 1
+      },
+      "hits": []
+    }
+  }
+}

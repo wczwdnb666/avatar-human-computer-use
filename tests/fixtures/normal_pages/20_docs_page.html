@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>快速开始 - 启明文档</title>
+</head>
+<body>
+
+<header><a href="/">启明文档</a> <a href="/login">登录</a></header>
+<main>
+  <h1>快速开始</h1>
+  <p>本文用 5 分钟带你把第一条数据同步跑起来。</p>
+  <h2>第一步：安装客户端</h2>
+  <pre>pip install qiming-client</pre>
+  <h2>第二步：配置连接</h2>
+  <p>在控制台创建数据源后，会得到一串连接串。把它填进配置文件：</p>
+  <pre>endpoint = "https://api.example.com"
+token = "your-token"</pre>
+  <h2>第三步：启动同步</h2>
+  <pre>qiming sync --config ./config.toml</pre>
+  <p>首次同步会做全量拉取，之后自动切换为增量。</p>
+  <h2>常见问题</h2>
+  <p><strong>同步卡在"正在初始化"？</strong> 检查网络是否能访问 endpoint，
+     以及 token 是否过期。</p>
+  <p><strong>数据对不上？</strong> 检查源表是否有主键变更，或时区设置是否一致。</p>
+  <h2>下一步</h2>
+  <p>阅读<a href="/advanced">进阶配置</a>了解分片、重试与监控。</p>
+</main>
+<footer>
+  <a href="/terms">服务条款</a> <a href="/privacy">隐私政策</a>
+  <a href="/about">关于我们</a> <a href="/contact">联系我们</a>
+  <p>版权所有 © 2026 启明科技</p>
+</footer>
+</body>
+</html>
