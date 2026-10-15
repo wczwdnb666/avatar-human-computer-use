@@ -386,15 +386,27 @@ def selfcheck() -> dict:
     """
     checks = []
     failures = []
+    skipped = []
 
-    def _add(name, ok, detail):
-        checks.append({"name": name, "ok": bool(ok), "detail": detail})
-        if not ok:
+    def _add(name, ok, detail, skip=False):
+        """``skip=True`` → 本机环境缺这个资源，标 SKIP，不计入失败。"""
+        checks.append({"name": name, "ok": bool(ok),
+                       "skipped": bool(skip), "detail": detail})
+        if skip:
+            skipped.append(name)
+        elif not ok:
             failures.append(name)
 
     # 1. 能读到前台窗口
+    #    ⚠ 无交互式桌面会话（headless / session 0）时
+    #    ``GetForegroundWindow()`` 合法地返回 0 —— 那是**环境**里
+    #    没有前台窗口，不是 API 绑定错了 → SKIP。
     h = get_foreground()
-    _add("GetForegroundWindow 可用", h != 0, "前台 hwnd=0x%X" % h)
+    if h:
+        _add("GetForegroundWindow 可用", True, "前台 hwnd=0x%X" % h)
+    else:
+        _add("GetForegroundWindow 可用", False,
+             "本机无前台窗口（无交互式桌面会话）→ 跳过", skip=True)
 
     # 2. 前台窗口是有效窗口
     if h:
@@ -460,7 +472,8 @@ def selfcheck() -> dict:
             _add("AttachThreadInput 接口契约", True,
                  "%s（挂接失败属预期，不影响语义）" % detail)
 
-    return {"checks": checks, "failures": failures, "ok": not failures}
+    return {"checks": checks, "failures": failures,
+            "skipped": skipped, "ok": not failures}
 
 
 # --------------------------------------------------------------------------
@@ -487,9 +500,15 @@ def _main() -> int:
     if cmd == "selfcheck":
         res = selfcheck()
         for c in res["checks"]:
-            print("  [%s] %-32s %s" % ("OK" if c["ok"] else "!!", c["name"], c["detail"]))
-        print("前台自检: %d/%d" % (len(res["checks"]) - len(res["failures"]),
-                                   len(res["checks"])))
+            mark = ("SKIP" if c.get("skipped")
+                    else ("OK" if c["ok"] else "!!"))
+            print("  [%s] %-32s %s" % (mark, c["name"], c["detail"]))
+        n = len(res["checks"])
+        n_skip = len(res.get("skipped") or [])
+        line = "前台自检: %d/%d" % (n - len(res["failures"]) - n_skip, n)
+        if n_skip:
+            line += " (SKIP %d)" % n_skip
+        print(line)
         return 0 if res["ok"] else 1
 
     print("未知命令: %s（可选: info / activate / selfcheck）" % cmd)

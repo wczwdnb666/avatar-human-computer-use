@@ -509,9 +509,13 @@ def compare(before: Sequence[T.Element],
 def selfcheck() -> dict:
     checks, failures = [], []
 
-    def _add(name, ok, detail):
-        checks.append({"name": name, "ok": bool(ok), "detail": detail})
-        if not ok:
+    def _add(name, ok, detail, skip=False):
+        """``skip=True`` → 本机环境缺这个资源，标 SKIP，不计入失败。"""
+        checks.append({"name": name, "ok": bool(ok),
+                       "skipped": bool(skip), "detail": detail})
+        if skip:
+            pass
+        elif not ok:
             failures.append(name)
 
     # 1. 类型中文名映射有缺漏吗
@@ -626,15 +630,23 @@ def selfcheck() -> dict:
         _add("actions_of 对真实元素可用", False, "%s: %s" % (type(exc).__name__, exc))
 
     # 17. compare 能识别相同/差异
+    #    ⚠ 依赖**桌面上有 view 类型控件**。拿不到样本时判 SKIP ——
+    #    空快照下 `gone` 恒为空，判 FAIL 是在拿环境开刀。
     got = T.descendants(T.root(), kind=T.VIEW_CONTROL, max_depth=3, limit=20)
-    diff = compare(got, got)
-    _add("compare 相同快照无差异",
-         not diff["added"] and not diff["gone"],
-         "added=%d gone=%d same=%d" % (len(diff["added"]),
-                                       len(diff["gone"]), len(diff["same"])))
-    diff2 = compare(got, got[:max(1, len(got) // 2)])
-    _add("compare 能识别消失", len(diff2["gone"]) > 0,
-         "gone=%d" % len(diff2["gone"]))
+    if got:
+        diff = compare(got, got)
+        _add("compare 相同快照无差异",
+             not diff["added"] and not diff["gone"],
+             "added=%d gone=%d same=%d" % (len(diff["added"]),
+                                           len(diff["gone"]), len(diff["same"])))
+        diff2 = compare(got, got[:max(1, len(got) // 2)])
+        _add("compare 能识别消失", len(diff2["gone"]) > 0,
+             "gone=%d" % len(diff2["gone"]))
+    else:
+        _add("compare 相同快照无差异", False,
+             "桌面无 view 控件可作样本 → 跳过", skip=True)
+        _add("compare 能识别消失", False,
+             "桌面无 view 控件可作样本 → 跳过", skip=True)
 
     # 18. 名称截断
     long_el = T.Element(name="很长" * 40, control_type=T.ControlType.BUTTON)
@@ -642,7 +654,9 @@ def selfcheck() -> dict:
     _add("过长名称被截断", "…" in line and len(line) < 120,
          "长度 %d" % len(line))
 
-    return {"checks": checks, "failures": failures, "ok": not failures}
+    return {"checks": checks, "failures": failures,
+            "skipped": [c["name"] for c in checks if c.get("skipped")],
+            "ok": not failures}
 
 
 def _main() -> int:

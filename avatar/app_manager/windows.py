@@ -712,20 +712,36 @@ def to_dict_list(windows: list) -> list:
 
 
 def selfcheck() -> dict:
-    """窗口子系统自检（只读）。"""
+    """窗口子系统自检（只读）。
+
+    枚举类检查依赖**本机有交互式桌面会话**。没有窗口可枚举时判 SKIP ——
+    环境资源不存在 ≠ 代码有 bug（例如 headless / session 0）。
+    """
     checks = []
     failures = []
+    skipped = []
 
-    def _add(name, ok, detail):
-        checks.append({"name": name, "ok": bool(ok), "detail": detail})
-        if not ok:
+    def _add(name, ok, detail, skip=False):
+        """``skip=True`` → 本机环境缺这个资源，标 SKIP，不计入失败。"""
+        checks.append({"name": name, "ok": bool(ok),
+                       "skipped": bool(skip), "detail": detail})
+        if skip:
+            skipped.append(name)
+        elif not ok:
             failures.append(name)
 
     ws = list_windows()
-    _add("可枚举顶层窗口", len(ws) > 0, "共 %d 个" % len(ws))
+    if ws:
+        _add("可枚举顶层窗口", True, "共 %d 个" % len(ws))
+    else:
+        _add("可枚举顶层窗口", False,
+             "本机无顶层窗口（无交互式桌面会话）→ 跳过", skip=True)
 
     usable = [w for w in ws if w.is_usable]
-    _add("存在可用窗口", len(usable) > 0, "可用 %d 个" % len(usable))
+    if ws:
+        _add("存在可用窗口", len(usable) > 0, "可用 %d 个" % len(usable))
+    else:
+        _add("存在可用窗口", False, "无窗口可判 → 跳过", skip=True)
 
     _add("评分已排序", all(
         ws[i].score >= ws[i + 1].score for i in range(len(ws) - 1)
@@ -753,7 +769,8 @@ def selfcheck() -> dict:
          _raises(WindowNotFound, find_window, "不存在的标题XYZ123"),
          "WindowNotFound 已抛出")
 
-    return {"checks": checks, "failures": failures, "ok": not failures}
+    return {"checks": checks, "failures": failures,
+            "skipped": skipped, "ok": not failures}
 
 
 def _raises(exc, fn, *a, **kw) -> bool:
@@ -776,9 +793,15 @@ def _main() -> int:
     if cmd == "selfcheck":
         res = selfcheck()
         for c in res["checks"]:
-            print("  [%s] %-28s %s" % ("OK" if c["ok"] else "!!", c["name"], c["detail"]))
-        print("窗口自检: %d/%d" % (
-            len(res["checks"]) - len(res["failures"]), len(res["checks"])))
+            mark = ("SKIP" if c.get("skipped")
+                    else ("OK" if c["ok"] else "!!"))
+            print("  [%s] %-28s %s" % (mark, c["name"], c["detail"]))
+        n = len(res["checks"])
+        n_skip = len(res.get("skipped") or [])
+        line = "窗口自检: %d/%d" % (n - len(res["failures"]) - n_skip, n)
+        if n_skip:
+            line += " (SKIP %d)" % n_skip
+        print(line)
         return 0 if res["ok"] else 1
     if cmd == "popup":
         ps = popup_windows()

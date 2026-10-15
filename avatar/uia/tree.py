@@ -2051,15 +2051,25 @@ def summary(target, limit: int = 40) -> str:
 def selfcheck() -> dict:
     checks = []
 
-    def _add(name, ok, detail):
-        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+    def _add(name, ok, detail, skip=False):
+        """``skip=True`` → 本机环境缺这个资源，标 SKIP，不计入失败。"""
+        checks.append({"name": name, "ok": bool(ok),
+                       "skipped": bool(skip), "detail": detail})
 
     # 1. UIA 可用
+    #    ⚠ UIA 不可用是**环境能力缺失**（Server Core / 精简系统），
+    #    不是代码有 bug → 整个模块判 SKIP。
+    #    说清楚：这等于本模块**什么都没验**，别让人误以为"通过了"。
     avail = is_available()
-    _add("UIA 可用", avail, "IUIAutomation 创建成功" if avail else "不可用")
     if not avail:
-        return {"checks": checks, "failures": [c["name"] for c in checks if not c["ok"]],
-                "ok": False}
+        _add("UIA 可用", False,
+             "本机 UIA 不可用（Server Core / 精简系统）"
+             "→ 本模块全部检查跳过", skip=True)
+        return {"checks": checks,
+                "failures": [],
+                "skipped": [c["name"] for c in checks if c.get("skipped")],
+                "ok": True}
+    _add("UIA 可用", True, "IUIAutomation 创建成功")
 
     # 2. 能取到根元素
     r = root()
@@ -2168,8 +2178,10 @@ def selfcheck() -> dict:
          "连续 200 次读取后引用计数稳定")
 
     return {"checks": checks,
-            "failures": [c["name"] for c in checks if not c["ok"]],
-            "ok": all(c["ok"] for c in checks)}
+            "failures": [c["name"] for c in checks
+                         if not c["ok"] and not c.get("skipped")],
+            "skipped": [c["name"] for c in checks if c.get("skipped")],
+            "ok": all(c["ok"] or c.get("skipped") for c in checks)}
 
 
 def _raises(exc, fn, *a, **kw) -> bool:

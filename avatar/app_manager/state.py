@@ -485,16 +485,25 @@ def selfcheck() -> dict:
     checks = []
     failures = []
 
-    def _add(name, ok, detail):
-        checks.append({"name": name, "ok": bool(ok), "detail": detail})
-        if not ok:
+    def _add(name, ok, detail, skip=False):
+        """``skip=True`` → 本机环境缺这个资源，标 SKIP，不计入失败。"""
+        checks.append({"name": name, "ok": bool(ok),
+                       "skipped": bool(skip), "detail": detail})
+        if skip:
+            pass
+        elif not ok:
             failures.append(name)
 
     from .windows import list_windows
     ws = [w for w in list_windows() if w.is_usable]
     if not ws:
-        _add("存在可操作窗口", False, "无可操作窗口")
-        return {"checks": checks, "failures": failures, "ok": False}
+        # ⚠ 原本判 FAIL —— 但"本机没有可用窗口"是**环境**
+        #    （headless / session 0），不是状态读取有问题 → SKIP。
+        _add("存在可操作窗口", False,
+             "本机无可用窗口（无交互式桌面会话）→ 跳过", skip=True)
+        return {"checks": checks, "failures": [],
+                "skipped": [c["name"] for c in checks if c.get("skipped")],
+                "ok": True}
 
     hwnd = ws[0].hwnd
     try:
@@ -521,4 +530,6 @@ def selfcheck() -> dict:
     except Exception as e:
         _add("状态测试执行", False, "异常: %r" % (e,))
 
-    return {"checks": checks, "failures": failures, "ok": not failures}
+    return {"checks": checks, "failures": failures,
+            "skipped": [c["name"] for c in checks if c.get("skipped")],
+            "ok": not failures}

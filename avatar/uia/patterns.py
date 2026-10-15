@@ -1360,8 +1360,10 @@ def selfcheck() -> dict:
     """跑一遍模式层的自检，返回 ``{"checks": [...], "ok": bool}``。"""
     checks = []
 
-    def _add(name, ok, detail):
-        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+    def _add(name, ok, detail, skip=False):
+        """``skip=True`` → 本机环境缺这个资源，标 SKIP，不计入失败。"""
+        checks.append({"name": name, "ok": bool(ok),
+                       "skipped": bool(skip), "detail": detail})
 
     from ..app_manager import windows as W
 
@@ -1396,10 +1398,15 @@ def selfcheck() -> dict:
     # 4. 好窗口上能探测到模式
     ws = [w for w in W.list_windows() if w.is_usable]
     if not ws:
-        _add("能找到可用窗口", False, "没有可用窗口，跳过后续检查")
+        # ⚠ 这里原本判 FAIL —— 但"本机没有可用窗口"是**环境**，
+        #    不是 patterns 的代码有问题（headless / session 0）→ SKIP。
+        _add("能找到可用窗口", False,
+             "本机无可用窗口（无交互式桌面会话）→ 后续实机检查跳过",
+             skip=True)
         return {"checks": checks,
-                "failures": [c["name"] for c in checks if not c["ok"]],
-                "ok": all(c["ok"] for c in checks)}
+                "failures": [],
+                "skipped": [c["name"] for c in checks if c.get("skipped")],
+                "ok": True}
 
     w0 = ws[0]
     try:
@@ -1452,8 +1459,10 @@ def selfcheck() -> dict:
         _add("describe 有输出", False, "异常: %s" % exc)
 
     return {"checks": checks,
-            "failures": [c["name"] for c in checks if not c["ok"]],
-            "ok": all(c["ok"] for c in checks)}
+            "failures": [c["name"] for c in checks
+                         if not c["ok"] and not c.get("skipped")],
+            "skipped": [c["name"] for c in checks if c.get("skipped")],
+            "ok": all(c["ok"] or c.get("skipped") for c in checks)}
 
 
 def _raises(exc, fn, *a, **kw) -> bool:

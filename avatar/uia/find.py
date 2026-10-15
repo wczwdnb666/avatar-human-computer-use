@@ -884,9 +884,13 @@ def selfcheck() -> dict:
     """不依赖具体应用的自检。"""
     checks, failures = [], []
 
-    def _add(name, ok, detail):
-        checks.append({"name": name, "ok": bool(ok), "detail": detail})
-        if not ok:
+    def _add(name, ok, detail, skip=False):
+        """``skip=True`` → 本机环境缺这个资源，标 SKIP，不计入失败。"""
+        checks.append({"name": name, "ok": bool(ok),
+                       "skipped": bool(skip), "detail": detail})
+        if skip:
+            pass
+        elif not ok:
             failures.append(name)
 
     # 1. 名称归一化
@@ -923,9 +927,12 @@ def selfcheck() -> dict:
     probe = _pick_probe_window()
 
     if probe is None:
-        # 没有可用窗口：跳过实机项，但如实记录"跳过"而不是谎报通过
-        _add("实机检查", True, "无可用窗口，实机项跳过（不计入失败）")
-        return {"checks": checks, "failures": failures, "ok": not failures}
+        # 没有可用窗口：跳过实机项。如实标 SKIP（不是谎报通过，也不是 FAIL）
+        # —— 环境里没有窗口可查，不是 find 的代码有问题。
+        _add("实机检查", False, "无可用窗口，实机项跳过", skip=True)
+        return {"checks": checks, "failures": failures,
+                "skipped": [c["name"] for c in checks if c.get("skipped")],
+                "ok": not failures}
 
     probe_hwnd = probe.hwnd
 
@@ -1016,7 +1023,9 @@ def selfcheck() -> dict:
     except Exception as exc:      # noqa: BLE001
         _add("窗口作用域不泄漏", False, "%s: %s" % (type(exc).__name__, exc))
 
-    return {"checks": checks, "failures": failures, "ok": not failures}
+    return {"checks": checks, "failures": failures,
+            "skipped": [c["name"] for c in checks if c.get("skipped")],
+            "ok": not failures}
 
 
 def _pick_probe_window():

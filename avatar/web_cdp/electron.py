@@ -747,9 +747,18 @@ def launch_electron(
 
 def selfcheck() -> Dict[str, Any]:
     checks = []
+    skipped = []
 
-    def add(name, ok, detail=""):
-        checks.append({"name": name, "ok": bool(ok), "detail": str(detail)})
+    def add(name, ok, detail="", skip=False):
+        """登记一条检查。
+
+        ``skip=True`` → 本机环境缺这个资源（例如一个监听端口都没有），
+        不是代码有 bug。标 SKIP，不计入 failures。
+        """
+        checks.append({"name": name, "ok": bool(ok),
+                       "skipped": bool(skip), "detail": str(detail)})
+        if skip:
+            skipped.append(name)
 
     # --- 字节序转换（最容易错的点） ---
     add("_ntohs 小端 0x1F90(8080) 还原",
@@ -782,30 +791,45 @@ def selfcheck() -> Dict[str, Any]:
     ports_all = scan_listen_ports()
     add("scan_listen_ports 全表可跑", isinstance(ports_all, list))
     if _is_windows:
-        add("全表有监听端口（系统总有）", len(ports_all) > 0, len(ports_all))
-        add("端口去重", len(ports_all) == len(set(ports_all)))
-        add("端口已排序", ports_all == sorted(ports_all))
-        add("端口都在合法范围",
-            all(1 <= p <= 65535 for p in ports_all))
-        add("不含 0 端口", 0 not in ports_all)
-
         import os
         mypid = os.getpid()
         mine = scan_listen_ports(mypid)
-        add("按 pid 过滤返回子集",
-            set(mine) <= set(ports_all), (len(mine), len(ports_all)))
+        nons = scan_listen_ports(0, listening_only=False)
+        v6_off = scan_listen_ports(0, include_v6=False)
+
+        # ⚠ 这一组全部以 ports_all 为**基准**（判格式或判子集关系）。
+        #   Windows 上 ports_all 几乎总是非空，但**环境资源不存在 ≠
+        #   代码有 bug** —— 空基准时判 SKIP，不能判 FAIL。
+        #
+        #   而且空基准下后果分两种，都坏：
+        #     · `all(...)` / `0 not in []` / `[] == sorted([])` → 恒 True（**假通过**）
+        #     · `set(真实) <= set([])` → 恒 False（**假红**）
+        #   假通过比假红更坏 —— 它让人以为验过了。
+        if ports_all:
+            add("全表有监听端口", True, len(ports_all))
+            add("端口去重", len(ports_all) == len(set(ports_all)))
+            add("端口已排序", ports_all == sorted(ports_all))
+            add("端口都在合法范围",
+                all(1 <= p <= 65535 for p in ports_all))
+            add("不含 0 端口", 0 not in ports_all)
+            add("按 pid 过滤返回子集",
+                set(mine) <= set(ports_all), (len(mine), len(ports_all)))
+            add("含非 LISTEN 时数量不减", len(nons) >= len(ports_all),
+                (len(nons), len(ports_all)))
+            # 真调用：不含 v6 时结果应是子集（v6 端口确实被排除）
+            add("include_v6=False 返回子集",
+                set(v6_off) <= set(ports_all))
+        else:
+            for nm in ("全表有监听端口", "端口去重", "端口已排序",
+                       "端口都在合法范围", "不含 0 端口",
+                       "按 pid 过滤返回子集", "含非 LISTEN 时数量不减",
+                       "include_v6=False 返回子集"):
+                add(nm, False, "本机无监听端口可检 → 跳过", skip=True)
+
+        # 下面两项是**绝对契约**，不拿全表当基准，所以照样验
         add("按 pid 过滤可跑（本进程可能无监听）",
             isinstance(mine, list))
-
         add("不存在的 pid 返回空", scan_listen_ports(999999) == [])
-
-        nons = scan_listen_ports(0, listening_only=False)
-        add("含非 LISTEN 时数量不减", len(nons) >= len(ports_all),
-            (len(nons), len(ports_all)))
-
-        # 真调用：不含 v6 时结果应是子集（v6 端口确实被排除）
-        add("include_v6=False 返回子集",
-            set(scan_listen_ports(0, include_v6=False)) <= set(ports_all))
     else:
         add("非 Windows 扫描返回空", ports_all == [])
 
@@ -996,8 +1020,9 @@ def selfcheck() -> Dict[str, Any]:
     add("find_electron_windows 可跑返回列表", isinstance(got, list),
         len(got))
 
-    failures = [c["name"] for c in checks if not c["ok"]]
-    return {"checks": checks, "failures": failures,
+    failures = [c["name"] for c in checks
+                if not c["ok"] and not c.get("skipped")]
+    return {"checks": checks, "failures": failures, "skipped": skipped,
             "ok": not failures, "module": "web_cdp.electron"}
 
 

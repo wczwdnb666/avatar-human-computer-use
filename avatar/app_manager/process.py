@@ -823,17 +823,30 @@ def terminate_tree(pid: int, force: bool = True, timeout: float = 5.0,
 # 自检
 # --------------------------------------------------------------------------
 def selfcheck() -> dict:
+    """进程子系统自检。
+
+    枚举检查依赖**本机能列出进程**。一个都列不出时判 SKIP ——
+    环境资源不存在 ≠ 代码有 bug。
+    """
     checks = []
     failures = []
+    skipped = []
 
-    def _add(name, ok, detail):
-        checks.append({"name": name, "ok": bool(ok), "detail": detail})
-        if not ok:
+    def _add(name, ok, detail, skip=False):
+        """``skip=True`` → 本机环境缺这个资源，标 SKIP，不计入失败。"""
+        checks.append({"name": name, "ok": bool(ok),
+                       "skipped": bool(skip), "detail": detail})
+        if skip:
+            skipped.append(name)
+        elif not ok:
             failures.append(name)
 
     # 1. 枚举进程
     procs = list_processes()
-    _add("可枚举进程", len(procs) > 5, "共 %d 个进程" % len(procs))
+    if procs:
+        _add("可枚举进程", len(procs) > 5, "共 %d 个进程" % len(procs))
+    else:
+        _add("可枚举进程", False, "本机枚举不到进程 → 跳过", skip=True)
 
     # 2. 能找到自己
     me = process_of(os.getpid())
@@ -871,7 +884,8 @@ def selfcheck() -> dict:
     q = A.command_line_from_argv([r"C:\Program Files\a b\c.exe", "x y"])
     _add("命令行引号正确", q.startswith('"') and '"x y"' in q, q)
 
-    return {"checks": checks, "failures": failures, "ok": not failures}
+    return {"checks": checks, "failures": failures,
+            "skipped": skipped, "ok": not failures}
 
 
 def _main() -> int:
@@ -884,9 +898,15 @@ def _main() -> int:
     if cmd == "selfcheck":
         res = selfcheck()
         for c in res["checks"]:
-            print("  [%s] %-30s %s" % ("OK" if c["ok"] else "!!", c["name"], c["detail"]))
-        print("进程自检: %d/%d" % (
-            len(res["checks"]) - len(res["failures"]), len(res["checks"])))
+            mark = ("SKIP" if c.get("skipped")
+                    else ("OK" if c["ok"] else "!!"))
+            print("  [%s] %-30s %s" % (mark, c["name"], c["detail"]))
+        n = len(res["checks"])
+        n_skip = len(res.get("skipped") or [])
+        line = "进程自检: %d/%d" % (n - len(res["failures"]) - n_skip, n)
+        if n_skip:
+            line += " (SKIP %d)" % n_skip
+        print(line)
         return 0 if res["ok"] else 1
     if cmd == "info":
         if len(sys.argv) < 3:

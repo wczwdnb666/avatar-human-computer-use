@@ -312,9 +312,23 @@ def _has_selfcheck(mod):
 def run_module_selfchecks(filt=None):
     """跑所有模块的 ``selfcheck()``。
 
-    返回 ``(通过数, 总数, 失败明细)``。明细是 ``(模块, 检查项, 原因)``。
+    返回 ``(通过数, 总数, 跳过项数, 失败明细)``。
+    明细是 ``(模块, 检查项, 原因)``。
+
+    ## SKIP 的口径
+
+    模块自检可以给单个检查项打 ``skipped=True`` —— 表示**本机环境缺这个
+    资源**（Server 版没有 UWP 应用、精简系统没有 App Paths 条目），
+    不是代码有 bug。
+
+    - SKIP 的项**不计入 failures**，也不改变退出码
+    - 返回的第三个值是**检查项**级别的 SKIP 总数（不是模块数）——
+      一个模块里可能有多项被跳过（launcher 就有 4 项）
+    - 通过数 ``passed`` 仍是**模块**数：一个模块只要有失败就不算通过，
+      但"有 SKIP 无 FAIL"的模块**算通过**（它该验的都验了）
     """
     passed = total = 0
+    n_skipped = 0
     failures = []
     slow = []
     total_dt = 0.0
@@ -379,7 +393,12 @@ def run_module_selfchecks(filt=None):
             continue
 
         checks = r.get("checks") or []
-        bad = [c for c in checks if not c.get("ok")]
+        # ★ SKIP 的项不算失败 —— 环境缺资源 ≠ 代码有 bug。
+        #   计数在**检查项**级别（一个模块可能多项被跳）。
+        n_skip = len([c for c in checks if c.get("skipped")])
+        n_skipped += n_skip
+        bad = [c for c in checks
+               if not c.get("ok") and not c.get("skipped")]
 
         # 红线判定（硬失败）
         limit = _max_for(path)
@@ -390,11 +409,20 @@ def run_module_selfchecks(filt=None):
         if r.get("ok") is True and not bad and not over:
             passed += 1
             tag = C.dim("%d 项 / %.2fs" % (len(checks), dt))
+            if n_skip:
+                tag += C.dim(" [SKIP %d]" % n_skip)
             if r.get("quick") is False:
                 tag += C.dim(" [full]")
             if r.get("skipped_heavy"):
                 tag += C.dim(" 跳过%d项重活" % r["skipped_heavy"])
             print("  %s %-28s %s" % (C.ok("[OK]"), label, tag))
+            if n_skip:
+                # 列出具体跳了哪几项 —— 否则 [SKIP N] 是个黑盒，
+                # 看不出到底没验什么。用 ASCII 箭头，别在自检输出里
+                # 引入非 ASCII（刚被 cp1252 咬过）。
+                names = [c.get("name", "?")
+                         for c in checks if c.get("skipped")]
+                print(C.dim("       -> SKIP: %s" % ", ".join(names)))
         elif over and r.get("ok") is True and not bad:
             # 只有"慢"这一条问题
             failures.append((path, "(超时红线)",
@@ -430,7 +458,7 @@ def run_module_selfchecks(filt=None):
     print(C.dim("  模块自检累计 %.2fs（红线 %.0fs）"
                 % (total_dt, TOTAL_SELFCHECK_MAX)))
 
-    return passed, total, failures
+    return passed, total, n_skipped, failures
 
 
 # --------------------------------------------------------------------------
@@ -2764,7 +2792,7 @@ def main(argv=None):
 
     all_fail = []
 
-    mp, mt, mf = run_module_selfchecks(args.only)
+    mp, mt, mskip, mf = run_module_selfchecks(args.only)
     all_fail += [("自检",) + f for f in mf]
 
     # 阶段三专项：硬约束的落地校验。默认就跑（很快，<1s），
@@ -2837,6 +2865,9 @@ def main(argv=None):
     print()
     print("=" * 64)
     head = "模块自检 %d/%d" % (mp, mt)
+    # ★ SKIP 单独报，且**不改变退出码** —— 环境缺资源不是失败。
+    if mskip:
+        head += " (SKIP %d)" % mskip
     if ht:
         head += "   阶段三 %d/%d" % (hp, ht)
     if p4t:

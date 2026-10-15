@@ -722,16 +722,27 @@ def selfcheck() -> dict:
         if not ok:
             failures.append(name)
 
-    # 1. 当前报告不可用
-    _add("当前报告不可用", is_available() is False,
-         "is_available()=False（接口占位，实现属阶段七）")
+    # 1. 可用性状态自洽
+    #    ⚠ 这里原本硬断言 ``is_available() is False`` —— 那是把
+    #    **本机当前状态**当成代码契约。哪天注册了引擎（set_engine）
+    #    或换个环境，它就假红了。
+    #    改成契约式：**可用 → 无原因；不可用 → 必须给出原因**。
+    #    同时 detail 里"接口占位，实现属阶段七"是过期文案 ——
+    #    引擎注册在阶段八已经落地。
+    _avail = is_available()
+    _reason = unavailable_reason()
+    _add("可用性状态自洽",
+         (_avail and not _reason) or (not _avail and bool(_reason)),
+         "is_available()=%s，原因%s"
+         % (_avail, ("已给出" if _reason else "为空")))
 
     # 2. 截图能力与识别能力分开报告
     cap = capture_backend()
     _add("截图 / 引擎 / 算法三者分开报告",
-         bool(cap) and is_available() is False
+         bool(cap) and isinstance(is_available(), bool)
          and algorithm_available() is True,
-         "截图=%s，引擎未接，算法可用（三个独立维度）" % cap)
+         "截图=%s，引擎=%s，算法=可用（三个独立维度）"
+         % (cap, "已接入" if is_available() else "未接入"))
 
     # 3. 原因说明
     reason = unavailable_reason()

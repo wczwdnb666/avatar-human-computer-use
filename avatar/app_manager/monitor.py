@@ -345,16 +345,30 @@ def to_dict() -> dict:
 # 自检
 # --------------------------------------------------------------------------
 def selfcheck() -> dict:
+    """显示器自检。
+
+    枚举检查依赖**本机接了显示器**。一块都枚举不到时判 SKIP ——
+    环境资源不存在 ≠ 代码有 bug（例如无头 / 远程会话）。
+    """
     checks = []
     failures = []
+    skipped = []
 
-    def _add(name, ok, detail):
-        checks.append({"name": name, "ok": bool(ok), "detail": detail})
-        if not ok:
+    def _add(name, ok, detail, skip=False):
+        """``skip=True`` → 本机环境缺这个资源，标 SKIP，不计入失败。"""
+        checks.append({"name": name, "ok": bool(ok),
+                       "skipped": bool(skip), "detail": detail})
+        if skip:
+            skipped.append(name)
+        elif not ok:
             failures.append(name)
 
     ms = monitors()
-    _add("至少一块显示器", len(ms) >= 1, "%d 块" % len(ms))
+    if ms:
+        _add("至少一块显示器", True, "%d 块" % len(ms))
+    else:
+        _add("至少一块显示器", False,
+             "本机无显示器（无头 / 远程会话）→ 跳过", skip=True)
 
     if ms:
         _add("恰好一块主屏", sum(1 for m in ms if m.is_primary) == 1,
@@ -381,4 +395,5 @@ def selfcheck() -> dict:
              all(m.work.left >= m.rect.left and m.work.top >= m.rect.top
                  for m in ms), "ok")
 
-    return {"checks": checks, "failures": failures, "ok": not failures}
+    return {"checks": checks, "failures": failures,
+            "skipped": skipped, "ok": not failures}

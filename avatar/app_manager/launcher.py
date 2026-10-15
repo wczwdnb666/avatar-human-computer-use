@@ -956,12 +956,36 @@ def is_running(target: str, process: Optional[str] = None) -> bool:
 # 自检
 # --------------------------------------------------------------------------
 def selfcheck() -> dict:
+    """启动器自检。
+
+    ## 关于 ``skip``
+
+    有些检查依赖**本机环境里有某个资源**（装了 UWP 应用、有某个
+    App Paths 条目）。这类检查在环境缺资源时必须判 **SKIP**，不能判 FAIL ——
+    **环境资源不存在 ≠ 代码有 bug**。
+
+    最典型的场景：GitHub Actions 的 ``windows-latest`` runner 是
+    **Server 版**，一个 UWP 应用都没有（无 Store、无计算器）。
+    当初这里写着"计算器是系统自带，必定存在"，于是在 CI 上必红。
+    那是环境假设，不是代码契约。
+
+    判 SKIP 的项不计入 ``failures``，``selfcheck.py`` 会标成 ``[SKIP]``，
+    也不影响退出码。
+    """
     checks = []
     failures = []
+    skipped = []
 
-    def _add(name, ok, detail):
-        checks.append({"name": name, "ok": bool(ok), "detail": detail})
-        if not ok:
+    def _add(name, ok, detail, skip=False):
+        """登记一条检查。
+
+        ``skip=True`` → 本机环境缺这个资源，标 SKIP，不计入失败。
+        """
+        checks.append({"name": name, "ok": bool(ok),
+                       "skipped": bool(skip), "detail": detail})
+        if skip:
+            skipped.append(name)
+        elif not ok:
             failures.append(name)
 
     # 1. 别名解析
@@ -981,21 +1005,44 @@ def selfcheck() -> dict:
          and not _looks_like_aumid("C:\\a\\b.exe"),
          "形如 Pkg_xxx!App 的识别为 AUMID")
 
-    # 4. App Paths 注册表可读（找一个一定存在的）
+    # 4. App Paths 注册表可读
+    #    ⚠ 这里原本硬写 ``True`` —— 那是**粉饰**：找不到条目时报告
+    #    "可读"是在说谎。本机没有对应条目就判 SKIP（环境缺资源）。
     ap = resolve_app_paths("notepad.exe") or resolve_app_paths("mspaint.exe")
-    _add("App Paths 可读", True,
-         ap if ap else "(本机无 notepad/mspaint 的 App Paths 条目，跳过)")
+    if ap:
+        _add("App Paths 可读", True, ap)
+    else:
+        _add("App Paths 可读", False,
+             "本机无 notepad/mspaint 的 App Paths 条目 → 跳过", skip=True)
 
     # 5. 能列出 UWP 应用
+    #    ⚠ Server 版 / 精简系统上**一个 UWP 应用都没有**。
+    #    那是环境事实，不是代码 bug → SKIP。
     aumids = list_aumids()
-    _add("可枚举 UWP AUMID", len(aumids) > 0,
-         "发现 %d 个，例如 %s" % (
-             len(aumids), aumids[0][1][:60] if aumids else "(无)"))
+    if aumids:
+        _add("可枚举 UWP AUMID", True,
+             "发现 %d 个，例如 %s" % (len(aumids), aumids[0][1][:60]))
+    else:
+        _add("可枚举 UWP AUMID", False,
+             "本机无 UWP 应用（Server / 精简系统）→ 跳过", skip=True)
 
-    # 5b. 按名字能找到 AUMID（计算器是系统自带，必定存在）
-    calc = find_aumid("Calculator")
-    _add("可按名字定位 UWP", bool(calc) and "!" in calc,
-         "Calculator → %s" % (calc or "(未找到)"))
+    # 5b. 按名字能找到 AUMID
+    #    ⚠ 这里原本写"计算器是系统自带，**必定存在**" —— 正是这个
+    #    环境假设让 CI 必红。改成**自洽性探针**：从枚举结果里取一个
+    #    真实存在的应用，拿它的**包名**去 find_aumid，必须回到它自己。
+    #    这样在任何有 UWP 的机器上都能验，且不依赖任何具体应用。
+    #    包名唯一（取最长的那个，避免被别的包名当子串抢先命中）。
+    if aumids:
+        probe = max(aumids, key=lambda t: len(t[1].split("!")[0]))
+        probe_pkg = probe[1].split("!")[0]
+        got = find_aumid(probe_pkg)
+        got_pkg = got.split("!")[0] if got else ""
+        _add("可按名字定位 UWP", got_pkg.lower() == probe_pkg.lower(),
+             "拿枚举到的真实包自验：%s → %s"
+             % (probe_pkg, got or "(未找到)"))
+    else:
+        _add("可按名字定位 UWP", False,
+             "本机无 UWP 应用可定位 → 跳过", skip=True)
 
     # 5c. PackageFamilyName 提取正确
     _add("PackageFamilyName 提取正确",
@@ -1004,10 +1051,17 @@ def selfcheck() -> dict:
          "去掉版本号与架构")
 
     # 5d. AUMID 里不含版本号（含版本号会激活失败）
-    bad = [a for _d, a in aumids if re.search(r"_\d+\.\d+\.\d+", a.split("!")[0])]
-    _add("AUMID 不含版本号", not bad,
-         "共 %d 个，格式全部合法" % len(aumids) if not bad
-         else "%d 个含版本号，例如 %s" % (len(bad), bad[0]))
+    #    ⚠ 空列表时 ``not bad`` 恒为 True —— 那是**假通过**。
+    #    没有样本可检时判 SKIP，不能算过。
+    if aumids:
+        bad = [a for _d, a in aumids
+               if re.search(r"_\d+\.\d+\.\d+", a.split("!")[0])]
+        _add("AUMID 不含版本号", not bad,
+             "共 %d 个，格式全部合法" % len(aumids) if not bad
+             else "%d 个含版本号，例如 %s" % (len(bad), bad[0]))
+    else:
+        _add("AUMID 不含版本号", False,
+             "本机无 UWP 应用可检 → 跳过", skip=True)
 
     # 6. 超时档位
     _add("慢启动应用有独立超时", _timeout_for("winword.exe") > DEFAULT_WINDOW_TIMEOUT,
@@ -1031,7 +1085,8 @@ def selfcheck() -> dict:
          _get_shell_rc_ok(),
          "不存在的文件 → TargetError + 错误 2（ShellExecuteW 报告不出）")
 
-    return {"checks": checks, "failures": failures, "ok": not failures}
+    return {"checks": checks, "failures": failures,
+            "skipped": skipped, "ok": not failures}
 
 
 def _get_shell_rc_ok() -> bool:
@@ -1064,9 +1119,15 @@ def _main() -> int:
     if cmd == "selfcheck":
         res = selfcheck()
         for c in res["checks"]:
-            print("  [%s] %-28s %s" % ("OK" if c["ok"] else "!!", c["name"], c["detail"]))
-        print("启动器自检: %d/%d" % (
-            len(res["checks"]) - len(res["failures"]), len(res["checks"])))
+            mark = ("SKIP" if c.get("skipped")
+                    else ("OK" if c["ok"] else "!!"))
+            print("  [%s] %-28s %s" % (mark, c["name"], c["detail"]))
+        n = len(res["checks"])
+        n_skip = len(res.get("skipped") or [])
+        line = "启动器自检: %d/%d" % (n - len(res["failures"]) - n_skip, n)
+        if n_skip:
+            line += " (SKIP %d)" % n_skip
+        print(line)
         return 0 if res["ok"] else 1
 
     if cmd == "aumids":
