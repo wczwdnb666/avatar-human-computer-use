@@ -985,8 +985,9 @@ uia.has_fallback()   # False
 ## 自检
 
 ```bash
-python scripts/selfcheck.py                # 模块自检 + 111 条硬约束（快，全只读）
-python scripts/selfcheck.py --full         # 加上集成测试（慢，会动窗口）
+python scripts/selfcheck.py                # 模块自检 + 111 条硬约束（quick 档，快）
+python scripts/selfcheck.py --full         # 完整档：连实机探测一起跑（慢）
+python scripts/selfcheck.py --tests        # 再连集成测试一起跑（更慢，会动窗口）
 python scripts/selfcheck.py --only phase5  # 只看阶段五（含环境可用性探测）
 python scripts/selfcheck.py --list         # 只列出会跑什么（含硬约束清单）
 

@@ -14,10 +14,14 @@
 
 用法::
 
-    python scripts/selfcheck.py            # 只跑模块自检（快）
-    python scripts/selfcheck.py --full     # 模块自检 + 全部测试文件
-    python scripts/selfcheck.py --only uia # 只跑名字里含 uia 的项
-    python scripts/selfcheck.py --list     # 只列出会跑哪些项
+    python scripts/selfcheck.py             # 模块自检（quick 档，毫秒级）
+    python scripts/selfcheck.py --full      # 完整档：连实机探测一起跑（慢）
+    python scripts/selfcheck.py --tests     # 再连集成测试文件一起跑（更慢）
+    python scripts/selfcheck.py --only uia  # 只跑名字里含 uia 的项
+    python scripts/selfcheck.py --list      # 只列出会跑哪些项
+
+**默认档必须快。** 支持 ``quick`` 参数的模块在默认档会跳过实机探测
+（绑端口、起假服务、扫文件系统、遍历窗口）。要跑实机加 ``--full``。
 
 退出码：0 全过；1 有失败。可以直接接进 CI 或 git hook。
 
@@ -309,11 +313,25 @@ def _has_selfcheck(mod):
 # --------------------------------------------------------------------------
 # 第一层执行
 # --------------------------------------------------------------------------
-def run_module_selfchecks(filt=None):
+def run_module_selfchecks(filt=None, quick=True):
     """跑所有模块的 ``selfcheck()``。
 
     返回 ``(通过数, 总数, 跳过项数, 失败明细)``。
     明细是 ``(模块, 检查项, 原因)``。
+
+    ## quick 档
+
+    ``quick=True``（默认）→ 调 ``mod.selfcheck(quick=True)``。
+    支持该参数的模块会跳过**实机探测**（绑端口、起假服务、扫文件系统、
+    遍历窗口），耗时从秒级降到毫秒级。
+
+    ``quick=False``（CLI 的 ``--full``）→ 传 ``quick=False``，
+    连实机探测一起跑。
+
+    ⚠ 为什么默认必须快：CI 上 ``web_cdp.launcher`` 曾因实机探测
+    3.41s 超过 3.0s 红线，而同一份代码在别的 Python 版本上恰好压线过 ——
+    那是**机器性能抖动**，不是代码问题。默认档不稳，红线就变成噪音，
+    最后被无视（这个文件顶部的注释写过这件事）。
 
     ## SKIP 的口径
 
@@ -363,15 +381,16 @@ def run_module_selfchecks(filt=None):
 
         # 执行。
         #
-        # ⚠ 优先传 quick=True —— 支持该参数的模块会跳过真实窗口遍历
-        #   （``avatar.uia.actions`` 从 70.78s 降到 1.35s）。
+        # ⚠ 优先传 quick —— 支持该参数的模块会跳过实机探测
+        #   （``avatar.uia.actions`` 从 70.78s 降到 1.35s，
+        #    ``avatar.web_cdp.launcher`` 从 2.5s 降到 ~0s）。
         #   不支持的老模块按原样无参调用。
         #   用 try/except TypeError 而不是 ``inspect.signature``，
         #   因为有些模块的 selfcheck 是 **C 层包装**或带装饰器，
         #   签名反射不可靠；真调一次最稳。
         t0 = time.monotonic()
         try:
-            r = mod.selfcheck(quick=True)
+            r = mod.selfcheck(quick=quick)
         except TypeError:
             try:
                 r = mod.selfcheck()
@@ -787,18 +806,34 @@ def check_phase3_hard_constraints():
 # --------------------------------------------------------------------------
 # 阶段四专项：Web CDP 层 + 双端验证的硬约束
 # --------------------------------------------------------------------------
-def check_phase4_hard_constraints():
+def check_phase4_hard_constraints(quick=True):
     """返回 ``(通过数, 总数, 失败明细)``。
 
     这里的检查和阶段三的思路一致：**验的是设计承诺，不是功能**。
     功能由 ``tests/test_phase4_*.py`` 覆盖；这里只确认那些
     "一旦违背就会毁掉整个架构"的红线还在。
+
+    ## quick 档
+
+    有两项本质上是**实机探测**（扫文件系统找浏览器、扫 TCP 表找监听端口），
+    耗时且受机器负载影响，标记为 ``heavy``。``quick=True``（默认）时跳过，
+    并打印 ``[SKIP]`` 如实说明 —— 不静默、也不算通过。
+
+    被跳过的项**不计入总数**，所以 ``11/11`` 的含义是
+    "实际跑了的 11 项全过"，而不是"13 项全过"。
     """
     passed = total = 0
+    skipped = []
     failures = []
 
-    def item(name, fn):
+    def item(name, fn, heavy=False):
         nonlocal passed, total
+        if heavy and quick:
+            skipped.append(name)
+            print("  %s %-34s %s"
+                  % (C.dim("[SKIP]"), name,
+                     C.dim("实机探测，quick 档跳过（--full 才跑）")))
+            return
         total += 1
         try:
             detail = fn()
@@ -1054,6 +1089,9 @@ def check_phase4_hard_constraints():
 
         分成两个入口的话，调用方就得自己判断"这是桌面还是网页"——
         而这个判断恰恰是最容易出错的地方（Electron 既是也不是）。
+
+        ⚠ 这条要**真调** ``verify_action``（带 timeout 与轮询 sleep），
+        实测 2.0s，归 heavy。
         """
         from avatar.verify import verify_action, VerifyRequest
         d = verify_action("desktop", hwnd=0, verify_window_title="x",
@@ -1114,6 +1152,12 @@ def check_phase4_hard_constraints():
             "_do_desktop 没接住 name_exact / control_type"
 
         # 可观测性：慢查询必须自曝
+        #
+        # ⚠ 这一条要**真跑一次** UIA 查询（全桌面遍历，实测 0.9s），
+        #   所以归 heavy。quick 档保留上面那些静态检查
+        #   （签名 / 源码透传），只把这一次实机查询让给 --full。
+        if quick:
+            return "三旋钮全链路透传（慢查询自曝需 --full）"
         r = D.verify_uia_exists("__nope_zzz__", expect=True,
                                timeout=0.0, name_exact=True)
         assert "probes" in r.evidence and "probe_seconds" in r.evidence, \
@@ -1129,10 +1173,10 @@ def check_phase4_hard_constraints():
     item("进程黑名单", _w6)
     item("降级决策必带 reason", _w7)
     item("Electron 失败返 None", _w8)
-    item("浏览器探测（环境信息）", _w9)
-    item("Electron 端口扫描", _w10)
+    item("浏览器探测（环境信息）", _w9, heavy=True)
+    item("Electron 端口扫描", _w10, heavy=True)
     item("模块 docstring", _w11)
-    item("双端验证共用一个入口", _w12)
+    item("双端验证共用一个入口", _w12, heavy=True)
     item("UIA 收紧旋钮全链路透传", _w13)
 
     return passed, total, failures
@@ -2735,7 +2779,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         description="avatar 统一自检 —— 模块契约 + 集成测试")
     ap.add_argument("--full", action="store_true",
-                    help="连集成测试一起跑（慢，会真的动窗口）")
+                    help="跑完整档：模块自检连**实机探测**一起跑"
+                         "（慢，会碰真实端口 / 文件系统）")
+    ap.add_argument("--tests", action="store_true",
+                    help="连集成测试文件一起跑（很慢，会真的动窗口）")
     ap.add_argument("--only", default=None,
                     help="只跑名字里含该子串的项，如 uia / windows / com")
     ap.add_argument("--list", action="store_true",
@@ -2775,7 +2822,7 @@ def main(argv=None):
         print("  ⑪ 模块级 docstring")
         print("  ⑫ 双端验证共用一个入口")
         print("  ⑬ UIA 收紧旋钮全链路透传（否则查询退化成 50 秒级全遍历）")
-        if args.full:
+        if args.tests:
             print()
             print("集成测试：")
             for rel in TEST_FILES:
@@ -2785,14 +2832,20 @@ def main(argv=None):
         return 0
 
     print("=" * 64)
-    print("avatar 自检%s" % ("（含集成测试）" if args.full else ""))
+    _mode = []
+    if args.full:
+        _mode.append("完整档：含实机探测")
+    if args.tests:
+        _mode.append("含集成测试")
+    print("avatar 自检%s" % ("（%s）" % " + ".join(_mode) if _mode else ""))
     print("=" * 64)
     print(C.dim("  解释器 %s" % sys.version.split()[0]))
     print(C.dim("  仓库   %s" % ROOT))
 
     all_fail = []
 
-    mp, mt, mskip, mf = run_module_selfchecks(args.only)
+    mp, mt, mskip, mf = run_module_selfchecks(args.only,
+                                              quick=not args.full)
     all_fail += [("自检",) + f for f in mf]
 
     # 阶段三专项：硬约束的落地校验。默认就跑（很快，<1s），
@@ -2808,7 +2861,7 @@ def main(argv=None):
     if not args.only or args.only.lower() in (
             "phase4", "web", "web_cdp", "cdp", "verify", "验证",
             "electron"):
-        p4p, p4t, p4f = check_phase4_hard_constraints()
+        p4p, p4t, p4f = check_phase4_hard_constraints(quick=not args.full)
         # 四层自己的 failures 是 (name, why) 二元组；补成 (层, 项, 说明, 原因)
         all_fail += [("阶段四", f[0], "", f[1]) for f in p4f]
     else:
@@ -2857,7 +2910,7 @@ def main(argv=None):
         p9p = p9t = 0
 
     tp = tt = 0
-    if args.full:
+    if args.tests:
         tp, tt, tf = run_test_files(args.only, verbose=not args.quiet)
         all_fail += [("测试",) + f for f in tf]
 
@@ -2882,7 +2935,7 @@ def main(argv=None):
         head += "   阶段八 %d/%d" % (p8p, p8t)
     if p9t:
         head += "   阶段九 %d/%d" % (p9p, p9t)
-    if args.full:
+    if args.tests:
         head += "   集成测试 %d/%d" % (tp, tt)
     print(head)
 

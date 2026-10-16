@@ -515,23 +515,59 @@ def close_browser(proc: Optional[subprocess.Popen], *,
     except Exception:
         return False
 
+#: heavy 档的检查项名。quick 档会跳过它们，用这张表**如实记账**
+#: （返回里的 ``skipped_heavy``），而不是默默不跑。
+HEAVY_CHECK_NAMES = (
+    "占用端口判为不空闲",
+    "pick_free_port 跳过占用",
+    "释放后判为空闲",
+    "200 但非 CDP 判为不可用",
+    "真 CDP 响应被识别",
+    "webSocketDebuggerUrl 可读",
+    "Protocol-Version 可读",
+    "http_json 对 404 返回 None",
+    "可执行文件探测不抛异常",
+)
+
+
 
 # --------------------------------------------------------------------------
 # 自检
 # --------------------------------------------------------------------------
-def selfcheck() -> dict:
+def selfcheck(quick: bool = True) -> dict:
     """启动器自检（**不启动浏览器**）。
 
-    检查：可执行文件探测、端口可用性判定、``/json/version`` 的
-    判据（用本地假服务器验），以及端口范围的合理性。
+    ## 两档
+
+    ``quick=True``（默认）—— 只做**不碰实机**的检查：常量、
+    公开函数存在性、纯逻辑契约、错误路径。实测 < 0.1s，随手可跑。
+
+    ``quick=False``（CLI 的 ``--full``）—— 追加**实机探测**：
+    绑端口验证 ``is_port_free`` / ``pick_free_port``、起本地假 HTTP
+    服务验证 ``probe_debug_port`` 的判据、扫本机已安装浏览器。
+    这些是真调用，耗时且**受机器负载影响**。
+
+    ## 为什么必须分档
+
+    CI 上 Python 3.10/3.11 曾因本项自检 3.41s 超过 3.0s 红线而红，
+    而 3.12/3.13 恰好压线通过 —— 那是**机器性能抖动**，不是代码问题。
+    默认档必须稳、必须快，否则红线会变成噪音，最后被无视。
+
+    返回里 ``skipped_heavy`` 记录 quick 档跳过了几项重活，
+    ``quick`` 记录本次跑的是哪一档。
     """
     checks = []
     failures = []
+    skipped_heavy = []
 
     def _add(name, ok, detail):
         checks.append({"name": name, "ok": bool(ok), "detail": detail})
         if not ok:
             failures.append(name)
+
+    # ======================================================================
+    # quick 档：常量 / 接口存在性 / 纯逻辑 / 错误路径（不碰实机）
+    # ======================================================================
 
     # -- 端口范围 -----------------------------------------------------------
     lo, hi = DEBUG_PORT_RANGE
@@ -540,7 +576,77 @@ def selfcheck() -> dict:
     _add("默认端口在范围内", lo <= DEFAULT_DEBUG_PORT < hi,
          str(DEFAULT_DEBUG_PORT))
 
-    # -- 端口占用判定 -------------------------------------------------------
+    # -- 公开函数存在且可调用 ------------------------------------------------
+    #    判据是"接口还在"，不是"实机能不能用" —— 后者归 heavy 档。
+    _public = ("probe_debug_port", "find_chrome", "find_edge",
+               "find_browser", "is_port_free", "pick_free_port",
+               "list_debug_instances", "launch_browser",
+               "ensure_debug_browser", "http_json")
+    _missing = [n for n in _public if not callable(globals().get(n))]
+    _add("公开函数齐备且可调用", not _missing,
+         "%d 个%s" % (len(_public),
+                      "" if not _missing else "，缺: %s" % ", ".join(_missing)))
+
+    # -- 默认超时有界（防止有人把它调成 0 或 1e9）----------------------------
+    import inspect as _inspect
+    try:
+        _d = _inspect.signature(http_json).parameters["timeout"].default
+    except Exception:      # noqa: BLE001 - 签名反射失败不该让自检挂掉
+        _d = None
+    _add("http_json 默认超时有界",
+         isinstance(_d, (int, float)) and 0 < _d <= 30, "timeout=%s" % _d)
+
+    # -- 错误路径：不存在的 exe 必须抛，而不是崩或静默 -------------------------
+    #    这条在**启动任何进程之前**就返回，所以是安全的纯校验。
+    try:
+        launch_browser(r"C:\definitely\not\here\chrome.exe", wait_ready=False)
+        _add("launch_browser 对不存在的 exe 抛错", False, "没有抛异常")
+    except BrowserLaunchError:
+        _add("launch_browser 对不存在的 exe 抛错", True,
+             "BrowserLaunchError（启动进程之前就拦下）")
+    except Exception as exc:      # noqa: BLE001
+        _add("launch_browser 对不存在的 exe 抛错", False,
+             "抛了非预期异常：%s: %s" % (type(exc).__name__, exc))
+
+    # ======================================================================
+    # heavy 档：实机探测（绑端口 / 起本地假服务 / 扫本机浏览器）
+    # ======================================================================
+    if quick:
+        for _nm in HEAVY_CHECK_NAMES:
+            skipped_heavy.append(_nm)
+    else:
+        _selfcheck_heavy(_add)
+
+    # -- BrowserInfo.kind 判定 ---------------------------------------------
+    _add("kind 识别 chrome",
+         BrowserInfo(browser="Chrome/120").kind == "chrome", "chrome")
+    _add("kind 识别 edge",
+         BrowserInfo(browser="Edg/120").kind == "edge", "edge")
+    _add("kind 识别 electron",
+         BrowserInfo(browser="Electron/28.0").kind == "electron", "electron")
+    _add("ok 依赖 websocket_url",
+         BrowserInfo().ok is False
+         and BrowserInfo(websocket_url="ws://x").ok is True, "契约")
+
+    # -- profile 目录必须带端口（避免两个实例共用）------------------------
+    a, b = _default_profile_dir(9222), _default_profile_dir(9223)
+    _add("profile 目录按端口隔离", a != b, "%s vs %s" % (a[-12:], b[-12:]))
+
+    return {"checks": checks, "failures": failures,
+            "skipped_heavy": len(skipped_heavy),
+            "quick": bool(quick), "ok": not failures}
+
+
+
+def _selfcheck_heavy(_add) -> None:
+    """heavy 档：需要**碰实机**的检查。
+
+    只在 ``selfcheck(quick=False)``（CLI 的 ``--full``）时调用。
+    这些是真调用 —— 绑 socket、起本地假 HTTP 服务、扫本机文件系统，
+    耗时且受机器负载影响，所以默认档不跑。
+
+    ``_add`` 是 ``selfcheck`` 里的登记闭包，直接复用它的口径。
+    """
     # 绑一个端口，验证 is_port_free 能识别出"被占"
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.bind(("127.0.0.1", 0))
@@ -659,20 +765,3 @@ def selfcheck() -> dict:
     except Exception as exc:      # noqa: BLE001
         _add("可执行文件探测不抛异常", False, "%s: %s"
              % (type(exc).__name__, exc))
-
-    # -- BrowserInfo.kind 判定 ---------------------------------------------
-    _add("kind 识别 chrome",
-         BrowserInfo(browser="Chrome/120").kind == "chrome", "chrome")
-    _add("kind 识别 edge",
-         BrowserInfo(browser="Edg/120").kind == "edge", "edge")
-    _add("kind 识别 electron",
-         BrowserInfo(browser="Electron/28.0").kind == "electron", "electron")
-    _add("ok 依赖 websocket_url",
-         BrowserInfo().ok is False
-         and BrowserInfo(websocket_url="ws://x").ok is True, "契约")
-
-    # -- profile 目录必须带端口（避免两个实例共用）------------------------
-    a, b = _default_profile_dir(9222), _default_profile_dir(9223)
-    _add("profile 目录按端口隔离", a != b, "%s vs %s" % (a[-12:], b[-12:]))
-
-    return {"checks": checks, "failures": failures, "ok": not failures}

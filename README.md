@@ -247,8 +247,9 @@ python -m avatar_shell --position br      # 指定初始位置（tl/tr/bl/br）
 ## 自检
 
 ```bash
-python scripts/selfcheck.py                # 模块自检 + 硬约束（快，全只读，约 30 秒）
-python scripts/selfcheck.py --full         # 加上集成测试（慢，会动窗口）
+python scripts/selfcheck.py                # 模块自检 + 硬约束（quick 档，约 20 秒）
+python scripts/selfcheck.py --full         # 完整档：连实机探测一起跑（慢）
+python scripts/selfcheck.py --tests        # 再连集成测试一起跑（更慢，会动窗口）
 python scripts/selfcheck.py --only phase9  # 只看某一阶段（phase3 ~ phase9）
 python scripts/selfcheck.py --list         # 只列出会跑什么
 
