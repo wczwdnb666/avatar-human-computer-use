@@ -1541,36 +1541,60 @@ def selfcheck(quick: bool = True) -> dict:
     checks, failures = [], []
     interrupted = False
     _t_start = time.monotonic()
+    # ⚠ 这几个必须在**最前面** import/绑定：后面多处（含第 1 项）要用。
+    #   放在函数中段会导致"前面的代码访问不到"的 UnboundLocalError。
+    import sys as _sys
+    import unittest.mock as _mock
+    _self_mod = _sys.modules[__name__]
     #: 非 quick 档的总预算。超过就停止新增重活（已完成的仍然有效）。
     deadline = time.monotonic() + (DEFAULT_SELFCHECK_BUDGET if not quick
                                    else 0.0)
 
-    def _add(name, ok, detail):
-        checks.append({"name": name, "ok": bool(ok), "detail": detail})
-        if not ok:
+    def _add(name, ok, detail, skip=False):
+        """``skip=True`` → 主动跳过重活 / 本机环境缺资源。
+
+        标 SKIP、不计入 failures、不影响退出码。
+        """
+        checks.append({"name": name, "ok": bool(ok),
+                       "skipped": bool(skip), "detail": detail})
+        if skip:
+            pass
+        elif not ok:
             failures.append(name)
 
     def _skip(name, why):
         """跳过项也要**显式记一笔** —— 静默跳过等于假装测过。"""
-        _add(name, True, "(quick 跳过) %s" % why)
+        _add(name, False, "(quick 跳过) %s" % why, skip=True)
 
     def _budget_left() -> bool:
         """还有预算吗？quick 档恒为 True（quick 档本来就没重活）。"""
         return quick or time.monotonic() < deadline
 
     # 1. 定位不到时**绝不**降级到坐标
-    for allow in (False, True):
-        try:
-            click(F.Query(automation_id="绝不存在的元素ID_ZZZ"),
-                  allow_coord=allow)
-            _add("定位失败不降级坐标(allow_coord=%s)" % allow, False,
-                 "没有抛 ElementNotFound")
-        except ElementNotFound:
-            _add("定位失败不降级坐标(allow_coord=%s)" % allow, True,
-                 "正确抛 ElementNotFound，坐标未被使用")
-        except Exception as exc:      # noqa: BLE001
-            _add("定位失败不降级坐标(allow_coord=%s)" % allow, False,
-                 "抛了 %s: %s" % (type(exc).__name__, exc))
+    #
+    # ⚠ 这里原本是**不限定窗口**的 Query —— 每次都要**全桌面遍历**
+    #   （实测 2.09s/次，循环两次 = 4.18s，是本 selfcheck 最大的耗时来源，
+    #   也是它在 CI 上超 3s 红线的根因）。
+    #
+    #   但这一项要验的**根本不是"怎么找"**，而是"**找不到时怎么办**" ——
+    #   即 `_as_element` 抛 ElementNotFound 之后，`click` 会不会偷偷
+    #   降级去用坐标。所以直接 mock 掉查找、构造出"找不到"即可：
+    #   零搜索耗时，语义**完全保留**，且不依赖本机有窗口（headless 也能跑）。
+    with _mock.patch.object(
+            F, "find_one",
+            side_effect=ElementNotFound("测试：故意让查找失败")):
+        for allow in (False, True):
+            try:
+                click(F.Query(automation_id="绝不存在的元素ID_ZZZ"),
+                      allow_coord=allow)
+                _add("定位失败不降级坐标(allow_coord=%s)" % allow, False,
+                     "没有抛 ElementNotFound")
+            except ElementNotFound:
+                _add("定位失败不降级坐标(allow_coord=%s)" % allow, True,
+                     "正确抛 ElementNotFound，坐标未被使用")
+            except Exception as exc:      # noqa: BLE001
+                _add("定位失败不降级坐标(allow_coord=%s)" % allow, False,
+                     "抛了 %s: %s" % (type(exc).__name__, exc))
 
     # 2. 坐标钩子未注册时抛 UnsupportedError
     register_coord_fallback(None)
@@ -1813,14 +1837,18 @@ def selfcheck(quick: bool = True) -> dict:
     # ⚠ 构造器叫 ``F.query`` 不是 ``F.by_name`` —— 是"按条件建查询对象"，
     #   不是"按名字找"。名字匹配要靠 ``name=`` 参数。
     #
-    # ⚠⚠ 这里**必须收紧条件**，否则又是 50 秒级：
-    #     ``F.query("__xxx__")`` 走的是宽松子串匹配 → 下推不了 →
-    #     Python 全遍历（实测 52.28s）。加 ``name_exact=True`` 就能
-    #     落到 UIA 原生 FindAll（实测 2.09s）。
-    #     这正是阶段四硬约束 #13 说的那个悬崖。
+    # ⚠⚠ 两个性能陷阱，都踩过：
+    #   1) ``F.query("__xxx__")`` 走宽松子串匹配 → 下推不了 → Python 全遍历
+    #      （实测 52.28s）。加 ``name_exact=True`` 落到 UIA 原生 FindAll
+    #      （实测 2.09s）。这是阶段四硬约束 #13 说的那个悬崖。
+    #   2) 但 2.09s 仍然吃掉整个 selfcheck 的预算 —— 而这一项要验的是
+    #      "``_verify_result`` 拿到 query 判据、**查不到时**怎么判"，
+    #      **不是 UIA 怎么查**。所以直接 mock 掉查询、构造出"查不到"：
+    #      零搜索耗时，语义完全保留，且不依赖本机桌面内容（headless 也能跑）。
     try:
         q = F.query("__definitely_not_exist_zzz__", name_exact=True)
-        vr = _verify_result(fe, q, 0.5)
+        with _mock.patch.object(F, "exists", return_value=False):
+            vr = _verify_result(fe, q, 0.15)
         _add("Query 查不到 → fail",
              vr.failed is True, vr.describe())
         _add("Query 判据 kind=query",
@@ -1870,9 +1898,7 @@ def selfcheck(quick: bool = True) -> dict:
         set_suggest_enabled(old_sg)
 
     # -- _verify_written：三类回读结果 --
-    import sys as _sys
-    import unittest.mock as _mock
-    _self_mod = _sys.modules[__name__]
+    # `_sys` / `_mock` / `_self_mod` 已在函数开头绑定（见那里的注释）。
 
     with _mock.patch.object(_self_mod, "read_uia_value",
                             lambda el: (True, "abc")):
@@ -1981,13 +2007,11 @@ def selfcheck(quick: bool = True) -> dict:
         "module": __name__,
         "quick": bool(quick),
         "interrupted": bool(interrupted),
-        #: 因 quick / 预算而没跑的重活项数（transparency）
-        #  ⚠ detail 不保证是 str —— 有几项直接塞了 bool/对象进去。
-        #    用 str() 兜一层，否则 `in` 会抛 TypeError。
-        "skipped_heavy": sum(
-            1 for c in checks
-            if "(quick 跳过)" in str(c.get("detail") or "")
-            or "超出" in str(c.get("detail") or "")),
+        #: 因 quick / 预算 / 环境缺失而没跑的项数（transparency）。
+        #: 用 check 项的 ``skipped`` 标记显式统计 —— 不再靠扫 detail
+        #: 里的文案（那太脆弱，改个字就失准）。
+        "skipped_heavy": sum(1 for c in checks if c.get("skipped")),
+        "skipped": [c["name"] for c in checks if c.get("skipped")],
         "elapsed": round(elapsed, 3),
     }
 

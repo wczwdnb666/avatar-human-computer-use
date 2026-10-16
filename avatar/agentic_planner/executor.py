@@ -1008,6 +1008,12 @@ class _FakeRunner:
         return v
 
 
+#: heavy 段（真跑 executor 流程 + 真写磁盘）的检查项数。
+#: quick 档跳过这么多项，用返回里的 ``skipped_heavy`` 如实报出。
+#: ⚠ 改动 heavy 段时同步这个数字 —— 数字偏了自检输出会立刻显形。
+HEAVY_CHECK_COUNT = 49
+
+
 def selfcheck(quick: bool = True) -> dict:
     """executor 自检。**用假 runner / 假 observer，不碰真实桌面。**"""
     import os
@@ -1025,12 +1031,17 @@ def selfcheck(quick: bool = True) -> dict:
         if not ok:
             failures.append(name)
 
+    #: quick 档跳过多少项重活（heavy 段的项数）—— 如实记账，
+    #: 别让人以为「没跑」等于「跑了且通过」。
+    n_skipped_heavy = HEAVY_CHECK_COUNT if quick else 0
+
     _me = _sys.modules[__name__]
     from .goal import parse_goal
     from .plan import Plan, Step as PStep
     from .planner import RuleBasedPlanner
 
-    tmp = tempfile.mkdtemp(prefix="avatar_exec_")
+    # quick 档绝不创建临时目录；假 runner / memory 只在完整档需要。
+    tmp = tempfile.mkdtemp(prefix="avatar_exec_") if not quick else None
 
     def _mk_plan(txt="打开记事本输入hello", **kw):
         return RuleBasedPlanner(**kw).plan(parse_goal(txt))
@@ -1075,269 +1086,299 @@ def selfcheck(quick: bool = True) -> dict:
         _add("模块 docstring 含「能力边界」",
              "能力边界" in (_me.__doc__ or ""), "有")
 
-        # ============ 2) 顺序执行 ============
-        plan = _mk_plan("打开记事本输入hello")
-        r = _FakeRunner()
-        out = _exec(r).run(plan)
-        _add("★ 两步全部成功 → 任务成功",
-             out.ok is True and out.task_state == "success", out.describe())
-        _add("★ runner 被调用了两次", len(r.calls) == 2, str(r.calls))
-        _add("★ 执行顺序符合 DAG", r.calls == ["s1", "s2"], str(r.calls))
-        _add("每步都记了结果",
-             all(s.ok for s in out.steps), str([s.ok for s in out.steps]))
+        # ============ 1b) 接口契约（静态检查，不构造实例）============
+        #
+        # ⚠ 这里**故意不构造 Executor 实例** —— 构造需要 memory，
+        #   而 memory 默认写 ~/.avatar/tasks/，会污染用户的真实存档。
+        #   heavy 段注入临时目录是为了真跑；静态检查不需要。
+        import inspect as _inspect
+        _add("Executor / ExecutionResult / StepResult 三个类都在",
+             all(hasattr(_me, _n)
+                 for _n in ("Executor", "ExecutionResult", "StepResult")),
+             "三个")
+        _sig_run = _inspect.signature(_me.Executor.run)
+        _add("Executor.run 签名含 mem 旋钮",
+             "mem" in _sig_run.parameters, ", ".join(_sig_run.parameters))
+        _add("Executor.describe 是方法",
+             callable(getattr(_me.Executor, "describe", None)), "有")
+        _add("describe_planner 可调用",
+             callable(getattr(_me, "describe_planner", None)), "有")
+        _add("StepResult.describe 是方法",
+             callable(getattr(_me.StepResult, "describe", None)), "有")
 
-        # ============ 3) 状态机接入（硬约束 4）============
-        _add("★ 步骤终态是 success",
-             all(str(s.state) == "success" for s in plan.steps),
-             str([s.state for s in plan.steps]))
-        _add("★ memory 记了状态转换",
-             len(out.memory.events_of("transition")) >= 2,
-             "%d 条" % len(out.memory.events_of("transition")))
-        _add("★ memory 里没有非法转换的错误记录",
-             not any("非法状态转换" in str(e.get("error", {}))
-                     for e in out.memory.errors()),
-             "%d 条错误" % len(out.memory.errors()))
+        # ================= heavy 档（真跑 executor 流程）================
+        #
+        # ⚠ 这一段会**真跑** executor：注入假 runner/observer/verifier，
+        #   但 memory 会真写磁盘（临时目录）、真做断点恢复。
+        #   实测磁盘 IO 占本 selfcheck 的 85%（nt.remove 0.85s / replace
+        #   0.13s / fsync 0.11s / rmdir 0.11s）—— 那是 CI 上超 3s 红线的
+        #   根源，也是「换个 runner 负载就红」的原因。
+        #
+        #   所以归 heavy：默认档不跑，--full 才跑。
+        if not quick:
+            # ============ 2) 顺序执行 ============
+            plan = _mk_plan("打开记事本输入hello")
+            r = _FakeRunner()
+            out = _exec(r).run(plan)
+            _add("★ 两步全部成功 → 任务成功",
+                 out.ok is True and out.task_state == "success", out.describe())
+            _add("★ runner 被调用了两次", len(r.calls) == 2, str(r.calls))
+            _add("★ 执行顺序符合 DAG", r.calls == ["s1", "s2"], str(r.calls))
+            _add("每步都记了结果",
+                 all(s.ok for s in out.steps), str([s.ok for s in out.steps]))
 
-        # ============ 4) 并行（DAG 的价值）============
-        plan_p = _mk_plan("打开浏览器，打开记事本")
-        rp = _FakeRunner()
-        _add("★ 两个 open 都无依赖（可并行）",
-             plan_p.steps[0].depends_on == []
-             and plan_p.steps[1].depends_on == [], "并行")
-        out_p = _exec(rp).run(plan_p)
-        _add("★ 并行批次都执行了",
-             set(rp.calls) == {"s1", "s2"} and out_p.ok, str(rp.calls))
+            # ============ 3) 状态机接入（硬约束 4）============
+            _add("★ 步骤终态是 success",
+                 all(str(s.state) == "success" for s in plan.steps),
+                 str([s.state for s in plan.steps]))
+            _add("★ memory 记了状态转换",
+                 len(out.memory.events_of("transition")) >= 2,
+                 "%d 条" % len(out.memory.events_of("transition")))
+            _add("★ memory 里没有非法转换的错误记录",
+                 not any("非法状态转换" in str(e.get("error", {}))
+                         for e in out.memory.errors()),
+                 "%d 条错误" % len(out.memory.errors()))
 
-        rp2 = _FakeRunner()
-        out_p2 = _exec(rp2, parallel=False).run(
-            _mk_plan("打开浏览器，打开记事本"))
-        _add("★ 关掉并行也能跑完",
-             out_p2.ok and set(rp2.calls) == {"s1", "s2"}, str(rp2.calls))
+            # ============ 4) 并行（DAG 的价值）============
+            plan_p = _mk_plan("打开浏览器，打开记事本")
+            rp = _FakeRunner()
+            _add("★ 两个 open 都无依赖（可并行）",
+                 plan_p.steps[0].depends_on == []
+                 and plan_p.steps[1].depends_on == [], "并行")
+            out_p = _exec(rp).run(plan_p)
+            _add("★ 并行批次都执行了",
+                 set(rp.calls) == {"s1", "s2"} and out_p.ok, str(rp.calls))
 
-        # ============ 5) 失败 → 重试 ============
-        plan_f = _mk_plan("打开记事本输入hello")
-        rf = _FakeRunner({"s2": [{"ok": False, "detail": "第一次失败"},
-                                 {"ok": True, "detail": "第二次成功"}]})
-        out_f = _exec(rf, verifier=_follow_ver).run(plan_f)
-        _add("★ 第一次失败、第二次成功 → 任务成功",
-             out_f.ok is True, out_f.describe())
-        _add("★ s2 被调用了 2 次（重试了）",
-             rf.calls.count("s2") == 2, str(rf.calls))
-        _add("★ s2 的 attempts 记到 2",
-             plan_f.step_by_id("s2").attempts == 2,
-             str(plan_f.step_by_id("s2").attempts))
+            rp2 = _FakeRunner()
+            out_p2 = _exec(rp2, parallel=False).run(
+                _mk_plan("打开浏览器，打开记事本"))
+            _add("★ 关掉并行也能跑完",
+                 out_p2.ok and set(rp2.calls) == {"s1", "s2"}, str(rp2.calls))
 
-        # ============ 6) 重试上限（硬约束 6）============
-        plan_lim = _mk_plan("打开记事本输入hello")
-        rl = _FakeRunner({"s2": {"ok": False, "detail": "一直失败"}})
-        out_lim = _exec(rl, verifier=_s2_fail_ver).run(plan_lim)
-        _add("★ 一直失败 → 任务失败", out_lim.ok is False, out_lim.describe())
-        _add("★★ 调用次数不超过「重试上限 + 换策略上限 + 1」",
-             rl.calls.count("s2") <= _me.MAX_RETRIES
-             + _me.MAX_STRATEGY_SWITCHES + 1,
-             "s2 调了 %d 次" % rl.calls.count("s2"))
-        _add("★ s2 最终状态是 failed",
-             str(plan_lim.step_by_id("s2").state) in ("failed", "blocked"),
-             str(plan_lim.step_by_id("s2").state))
+            # ============ 5) 失败 → 重试 ============
+            plan_f = _mk_plan("打开记事本输入hello")
+            rf = _FakeRunner({"s2": [{"ok": False, "detail": "第一次失败"},
+                                     {"ok": True, "detail": "第二次成功"}]})
+            out_f = _exec(rf, verifier=_follow_ver).run(plan_f)
+            _add("★ 第一次失败、第二次成功 → 任务成功",
+                 out_f.ok is True, out_f.describe())
+            _add("★ s2 被调用了 2 次（重试了）",
+                 rf.calls.count("s2") == 2, str(rf.calls))
+            _add("★ s2 的 attempts 记到 2",
+                 plan_f.step_by_id("s2").attempts == 2,
+                 str(plan_f.step_by_id("s2").attempts))
 
-        # ============ 7) 自愈决策记入 memory（硬约束 7）============
-        _add("★★ 自愈决策被记入 memory（禁止静默重试）",
-             len(out_lim.memory.decisions()) >= 1,
-             "%d 条决策" % len(out_lim.memory.decisions()))
-        _add("★ 决策里有策略名",
-             all(d.get("strategy") for d in out_lim.memory.decisions()),
-             str([d.get("strategy") for d in out_lim.memory.decisions()]))
+            # ============ 6) 重试上限（硬约束 6）============
+            plan_lim = _mk_plan("打开记事本输入hello")
+            rl = _FakeRunner({"s2": {"ok": False, "detail": "一直失败"}})
+            out_lim = _exec(rl, verifier=_s2_fail_ver).run(plan_lim)
+            _add("★ 一直失败 → 任务失败", out_lim.ok is False, out_lim.describe())
+            _add("★★ 调用次数不超过「重试上限 + 换策略上限 + 1」",
+                 rl.calls.count("s2") <= _me.MAX_RETRIES
+                 + _me.MAX_STRATEGY_SWITCHES + 1,
+                 "s2 调了 %d 次" % rl.calls.count("s2"))
+            _add("★ s2 最终状态是 failed",
+                 str(plan_lim.step_by_id("s2").state) in ("failed", "blocked"),
+                 str(plan_lim.step_by_id("s2").state))
 
-        # ============ 8) 观测（硬约束 8）============
-        seen_obs: List[str] = []
+            # ============ 7) 自愈决策记入 memory（硬约束 7）============
+            _add("★★ 自愈决策被记入 memory（禁止静默重试）",
+                 len(out_lim.memory.decisions()) >= 1,
+                 "%d 条决策" % len(out_lim.memory.decisions()))
+            _add("★ 决策里有策略名",
+                 all(d.get("strategy") for d in out_lim.memory.decisions()),
+                 str([d.get("strategy") for d in out_lim.memory.decisions()]))
 
-        def _fake_obs(hwnd=None):
-            seen_obs.append("x")
-            return {"title": "记事本", "url": ""}
+            # ============ 8) 观测（硬约束 8）============
+            seen_obs: List[str] = []
 
-        plan_o = _mk_plan("打开记事本输入hello")
-        out_o = _exec(_FakeRunner(), observer=_fake_obs).run(plan_o)
-        _add("★★ 每步执行前后各观测一次（2 步 × 2 = 4 次）",
-             len(seen_obs) == 4, "%d 次" % len(seen_obs))
-        _add("★ 观测被记入 memory",
-             len(out_o.memory.events_of("observation")) == 4,
-             "%d 条" % len(out_o.memory.events_of("observation")))
-        _add("观测记录带 phase",
-             {e["phase"] for e in out_o.memory.events_of("observation")}
-             == {"before", "after"}, "before/after")
+            def _fake_obs(hwnd=None):
+                seen_obs.append("x")
+                return {"title": "记事本", "url": ""}
 
-        # ============ 9) 验证 ============
-        _ver_fail = _fail_ver
+            plan_o = _mk_plan("打开记事本输入hello")
+            out_o = _exec(_FakeRunner(), observer=_fake_obs).run(plan_o)
+            _add("★★ 每步执行前后各观测一次（2 步 × 2 = 4 次）",
+                 len(seen_obs) == 4, "%d 次" % len(seen_obs))
+            _add("★ 观测被记入 memory",
+                 len(out_o.memory.events_of("observation")) == 4,
+                 "%d 条" % len(out_o.memory.events_of("observation")))
+            _add("观测记录带 phase",
+                 {e["phase"] for e in out_o.memory.events_of("observation")}
+                 == {"before", "after"}, "before/after")
 
-        plan_v = _mk_plan("打开记事本")
-        out_v = _exec(_FakeRunner(), verifier=_ver_fail).run(plan_v)
-        _add("★ verifier 说失败 → 步骤失败（runner 成功也没用）",
-             out_v.ok is False, out_v.describe())
+            # ============ 9) 验证 ============
+            _ver_fail = _fail_ver
 
-        def _ver_ok(step, before, after):
-            return {"ok": True}
+            plan_v = _mk_plan("打开记事本")
+            out_v = _exec(_FakeRunner(), verifier=_ver_fail).run(plan_v)
+            _add("★ verifier 说失败 → 步骤失败（runner 成功也没用）",
+                 out_v.ok is False, out_v.describe())
 
-        plan_v2 = _mk_plan("打开记事本")
-        out_v2 = _exec(_FakeRunner({"s1": {"ok": False,
-                                           "detail": "runner 说失败"}}),
-                       verifier=_ver_ok).run(plan_v2)
-        _add("★ verifier 说成功 → 步骤成功（runner 失败也放过）",
-             out_v2.ok is True, out_v2.describe())
+            def _ver_ok(step, before, after):
+                return {"ok": True}
 
-        def _ver_boom(step, before, after):
-            raise RuntimeError("验证器炸了")
+            plan_v2 = _mk_plan("打开记事本")
+            out_v2 = _exec(_FakeRunner({"s1": {"ok": False,
+                                               "detail": "runner 说失败"}}),
+                           verifier=_ver_ok).run(plan_v2)
+            _add("★ verifier 说成功 → 步骤成功（runner 失败也放过）",
+                 out_v2.ok is True, out_v2.describe())
 
-        plan_v3 = _mk_plan("打开记事本")
-        out_v3 = _exec(_FakeRunner(), verifier=_ver_boom).run(plan_v3)
-        _add("★ verifier 抛异常不拖垮任务",
-             isinstance(out_v3, _me.ExecutionResult), "没崩")
+            def _ver_boom(step, before, after):
+                raise RuntimeError("验证器炸了")
 
-        # ============ 10) recovery 决策 ============
-        def _rec_skip(step, state="", error=""):
-            return "skip"
+            plan_v3 = _mk_plan("打开记事本")
+            out_v3 = _exec(_FakeRunner(), verifier=_ver_boom).run(plan_v3)
+            _add("★ verifier 抛异常不拖垮任务",
+                 isinstance(out_v3, _me.ExecutionResult), "没崩")
 
-        plan_r = _mk_plan("打开记事本")
-        out_r = _exec(_FakeRunner({"s1": {"ok": False}}),
-                      verifier=_ver_fail, recovery=_rec_skip).run(plan_r)
-        _add("★ recovery 说 skip → 步骤被跳过",
-             out_r.steps[0].skipped is True, out_r.describe())
-        _add("★ 跳过的步骤算完成任务", out_r.ok is True, out_r.task_state)
+            # ============ 10) recovery 决策 ============
+            def _rec_skip(step, state="", error=""):
+                return "skip"
 
-        def _rec_abort(step, state="", error=""):
-            return "abort"
+            plan_r = _mk_plan("打开记事本")
+            out_r = _exec(_FakeRunner({"s1": {"ok": False}}),
+                          verifier=_ver_fail, recovery=_rec_skip).run(plan_r)
+            _add("★ recovery 说 skip → 步骤被跳过",
+                 out_r.steps[0].skipped is True, out_r.describe())
+            _add("★ 跳过的步骤算完成任务", out_r.ok is True, out_r.task_state)
 
-        plan_a = _mk_plan("打开记事本")
-        out_a = _exec(_FakeRunner({"s1": {"ok": False}}),
-                      verifier=_ver_fail, recovery=_rec_abort).run(plan_a)
-        _add("★ recovery 说 abort → 任务失败",
-             out_a.ok is False, out_a.task_state)
+            def _rec_abort(step, state="", error=""):
+                return "abort"
 
-        def _rec_boom(step, state="", error=""):
-            raise RuntimeError("恢复器炸了")
+            plan_a = _mk_plan("打开记事本")
+            out_a = _exec(_FakeRunner({"s1": {"ok": False}}),
+                          verifier=_ver_fail, recovery=_rec_abort).run(plan_a)
+            _add("★ recovery 说 abort → 任务失败",
+                 out_a.ok is False, out_a.task_state)
 
-        plan_rb = _mk_plan("打开记事本")
-        out_rb = _exec(_FakeRunner({"s1": {"ok": False}}),
-                       verifier=_ver_fail, recovery=_rec_boom).run(plan_rb)
-        _add("★ recovery 抛异常不拖垮任务",
-             isinstance(out_rb, _me.ExecutionResult), "没崩")
+            def _rec_boom(step, state="", error=""):
+                raise RuntimeError("恢复器炸了")
 
-        # ============ 11) runner 抛异常 ============
-        plan_x = _mk_plan("打开记事本")
-        rx = _FakeRunner({"s1": OSError("runner 炸了")})
-        out_x = _exec(rx, verifier=_fail_ver,
-                      recovery=lambda *a, **k: "abort").run(plan_x)
-        _add("★ runner 抛异常被收敛成失败（不外泄）",
-             out_x.ok is False and isinstance(out_x, _me.ExecutionResult),
-             out_x.describe())
-        _add("异常信息记进了 memory",
-             any("OSError" in str(e.get("error", {}))
-                 for e in out_x.memory.errors()),
-             "%d 条错误" % len(out_x.memory.errors()))
+            plan_rb = _mk_plan("打开记事本")
+            out_rb = _exec(_FakeRunner({"s1": {"ok": False}}),
+                           verifier=_ver_fail, recovery=_rec_boom).run(plan_rb)
+            _add("★ recovery 抛异常不拖垮任务",
+                 isinstance(out_rb, _me.ExecutionResult), "没崩")
 
-        # ============ 12) 全局超时 ============
-        plan_t = _mk_plan("打开记事本输入hello")
+            # ============ 11) runner 抛异常 ============
+            plan_x = _mk_plan("打开记事本")
+            rx = _FakeRunner({"s1": OSError("runner 炸了")})
+            out_x = _exec(rx, verifier=_fail_ver,
+                          recovery=lambda *a, **k: "abort").run(plan_x)
+            _add("★ runner 抛异常被收敛成失败（不外泄）",
+                 out_x.ok is False and isinstance(out_x, _me.ExecutionResult),
+                 out_x.describe())
+            _add("异常信息记进了 memory",
+                 any("OSError" in str(e.get("error", {}))
+                     for e in out_x.memory.errors()),
+                 "%d 条错误" % len(out_x.memory.errors()))
 
-        def _slow(step):
-            time.sleep(0.2)
-            return {"ok": True}
+            # ============ 12) 全局超时 ============
+            plan_t = _mk_plan("打开记事本输入hello")
 
-        out_t = _exec(_slow, task_timeout=0.05, parallel=False).run(plan_t)
-        _add("★ 全局超时会中断执行",
-             out_t.elapsed < 3.0, "%.2fs" % out_t.elapsed)
-        _add("★ 超时后任务不算成功", out_t.ok is False, out_t.task_state)
+            def _slow(step):
+                time.sleep(0.2)
+                return {"ok": True}
 
-        # ============ 13) 风控闸 ============
-        from ..risk_detector import integration as RI
-        was = RI.is_installed()
-        try:
-            RI.uninstall()
-            plan_g = _mk_plan("打开记事本")
-            out_g = _exec(_FakeRunner(), guard_enabled=True).run(plan_g)
-            _add("★ 风控集成未启用时闸门放行",
-                 out_g.ok is True, out_g.task_state)
+            out_t = _exec(_slow, task_timeout=0.05, parallel=False).run(plan_t)
+            _add("★ 全局超时会中断执行",
+                 out_t.elapsed < 3.0, "%.2fs" % out_t.elapsed)
+            _add("★ 超时后任务不算成功", out_t.ok is False, out_t.task_state)
 
-            RI.install(enabled=True, mode_=RI.MODE_OBSERVE)
-            plan_g2 = _mk_plan("打开记事本")
-            out_g2 = _exec(_FakeRunner(), guard_enabled=True).run(plan_g2)
-            _add("★ observe 模式下也不阻断",
-                 out_g2.ok is True, out_g2.task_state)
-        finally:
-            RI.uninstall()
-            RI.install(enabled=was)
+            # ============ 13) 风控闸 ============
+            from ..risk_detector import integration as RI
+            was = RI.is_installed()
+            try:
+                RI.uninstall()
+                plan_g = _mk_plan("打开记事本")
+                out_g = _exec(_FakeRunner(), guard_enabled=True).run(plan_g)
+                _add("★ 风控集成未启用时闸门放行",
+                     out_g.ok is True, out_g.task_state)
 
-        # ============ 14) 没有 runner ============
-        plan_nr = _mk_plan("打开记事本")
-        out_nr = _exec(None, verifier=_fail_ver,
-                       recovery=lambda *a, **k: "abort").run(plan_nr)
-        _add("★ 没注入 runner 时返回失败（不崩）",
-             out_nr.ok is False
-             and any("not_implemented" in s.detail for s in out_nr.steps),
-             out_nr.describe())
+                RI.install(enabled=True, mode_=RI.MODE_OBSERVE)
+                plan_g2 = _mk_plan("打开记事本")
+                out_g2 = _exec(_FakeRunner(), guard_enabled=True).run(plan_g2)
+                _add("★ observe 模式下也不阻断",
+                     out_g2.ok is True, out_g2.task_state)
+            finally:
+                RI.uninstall()
+                RI.install(enabled=was)
 
-        # ============ 15) memory 落盘与断点恢复 ============
-        plan_m = _mk_plan("打开记事本输入hello")
-        mem = ShortTermMemory("exectest", directory=tmp)
-        _exec(_FakeRunner()).run(plan_m, mem)
-        _add("★ 执行后 memory 自动落盘",
-             os.path.isfile(os.path.join(tmp, "exectest.json")), "有")
-        loaded = ShortTermMemory.load("exectest", directory=tmp)
-        _add("★★ 断点恢复：能读出步骤状态",
-             loaded.step_state("s1") == "success", loaded.step_state("s1"))
-        _add("★★ 断点恢复：能还原计划",
-             _me._plan_from_memory(loaded) is not None, "能")
+            # ============ 14) 没有 runner ============
+            plan_nr = _mk_plan("打开记事本")
+            out_nr = _exec(None, verifier=_fail_ver,
+                           recovery=lambda *a, **k: "abort").run(plan_nr)
+            _add("★ 没注入 runner 时返回失败（不崩）",
+                 out_nr.ok is False
+                 and any("not_implemented" in s.detail for s in out_nr.steps),
+                 out_nr.describe())
 
-        # 恢复执行：已成功的不重跑
-        plan_m2 = _mk_plan("打开记事本输入hello")
-        mem2 = ShortTermMemory("exectest2", directory=tmp)
-        r_first = _FakeRunner({"s2": {"ok": False, "detail": "第一次失败"}})
-        _exec(r_first, verifier=_s2_fail_ver,
-              recovery=lambda *a, **k: "abort").run(plan_m2, mem2)
+            # ============ 15) memory 落盘与断点恢复 ============
+            plan_m = _mk_plan("打开记事本输入hello")
+            mem = ShortTermMemory("exectest", directory=tmp)
+            _exec(_FakeRunner()).run(plan_m, mem)
+            _add("★ 执行后 memory 自动落盘",
+                 os.path.isfile(os.path.join(tmp, "exectest.json")), "有")
+            loaded = ShortTermMemory.load("exectest", directory=tmp)
+            _add("★★ 断点恢复：能读出步骤状态",
+                 loaded.step_state("s1") == "success", loaded.step_state("s1"))
+            _add("★★ 断点恢复：能还原计划",
+                 _me._plan_from_memory(loaded) is not None, "能")
 
-        ex_resume = _exec(_FakeRunner())
-        out_res = ex_resume.resume("exectest2", directory=tmp)
-        _add("★★ resume 能把任务接着跑完",
-             out_res.ok is True, out_res.describe())
-        _add("★★ resume 不重跑已成功的步骤（s1 一次都没跑）",
-             ex_resume.runner.calls.count("s1") == 0,
-             "calls=%s" % ex_resume.runner.calls)
-        _add("★★ resume 只补跑失败的 s2",
-             ex_resume.runner.calls.count("s2") == 1,
-             "calls=%s" % ex_resume.runner.calls)
+            # 恢复执行：已成功的不重跑
+            plan_m2 = _mk_plan("打开记事本输入hello")
+            mem2 = ShortTermMemory("exectest2", directory=tmp)
+            r_first = _FakeRunner({"s2": {"ok": False, "detail": "第一次失败"}})
+            _exec(r_first, verifier=_s2_fail_ver,
+                  recovery=lambda *a, **k: "abort").run(plan_m2, mem2)
 
-        out_bad = _exec(_FakeRunner()).resume("不存在", directory=tmp)
-        _add("★ resume 不存在的任务不崩",
-             isinstance(out_bad, _me.ExecutionResult), "没崩")
+            ex_resume = _exec(_FakeRunner())
+            out_res = ex_resume.resume("exectest2", directory=tmp)
+            _add("★★ resume 能把任务接着跑完",
+                 out_res.ok is True, out_res.describe())
+            _add("★★ resume 不重跑已成功的步骤（s1 一次都没跑）",
+                 ex_resume.runner.calls.count("s1") == 0,
+                 "calls=%s" % ex_resume.runner.calls)
+            _add("★★ resume 只补跑失败的 s2",
+                 ex_resume.runner.calls.count("s2") == 1,
+                 "calls=%s" % ex_resume.runner.calls)
 
-        # ============ 16) 非法计划 ============
-        bad_plan = Plan(steps=[PStep(id="a", action="click",
-                                     depends_on=["b"]),
-                               PStep(id="b", action="click",
-                                     depends_on=["a"])])
-        out_bad2 = _exec(_FakeRunner()).run(bad_plan)
-        _add("★ 非法计划被拒（有环）",
-             out_bad2.ok is False and "不合法" in out_bad2.reason,
-             out_bad2.reason)
+            out_bad = _exec(_FakeRunner()).resume("不存在", directory=tmp)
+            _add("★ resume 不存在的任务不崩",
+                 isinstance(out_bad, _me.ExecutionResult), "没崩")
 
-        # ============ 17) 全部已完成 ============
-        done_plan = Plan(steps=[PStep(id="a", action="wait")])
-        done_plan.steps[0].state = "success"
-        out_e = _exec(_FakeRunner()).run(done_plan)
-        _add("★ 全部已完成的计划直接成功",
-             out_e.ok is True and out_e.steps == [], out_e.task_state)
+            # ============ 16) 非法计划 ============
+            bad_plan = Plan(steps=[PStep(id="a", action="click",
+                                         depends_on=["b"]),
+                                   PStep(id="b", action="click",
+                                         depends_on=["a"])])
+            out_bad2 = _exec(_FakeRunner()).run(bad_plan)
+            _add("★ 非法计划被拒（有环）",
+                 out_bad2.ok is False and "不合法" in out_bad2.reason,
+                 out_bad2.reason)
 
-        # ============ 18) 展示 ============
-        _add("Executor.describe 不抛",
-             isinstance(_exec(_FakeRunner()).describe(), str), "有")
-        _add("describe 列出三条上限",
-             all(k in _exec(_FakeRunner()).describe()
-                 for k in ("重试", "换策略", "超时")), "有")
-        _add("describe_planner 不抛",
-             isinstance(_me.describe_planner(), str), "有")
-        _add("StepResult.describe 可读",
-             isinstance(_me.StepResult(step_id="s1", ok=True).describe(),
-                        str), "有")
-        _add("ExecutionResult.to_dict JSON 安全",
-             __import__("json").dumps(out.to_dict()) != "", "ok")
+            # ============ 17) 全部已完成 ============
+            done_plan = Plan(steps=[PStep(id="a", action="wait")])
+            done_plan.steps[0].state = "success"
+            out_e = _exec(_FakeRunner()).run(done_plan)
+            _add("★ 全部已完成的计划直接成功",
+                 out_e.ok is True and out_e.steps == [], out_e.task_state)
+
+            # ============ 18) 展示 ============
+            _add("Executor.describe 不抛",
+                 isinstance(_exec(_FakeRunner()).describe(), str), "有")
+            _add("describe 列出三条上限",
+                 all(k in _exec(_FakeRunner()).describe()
+                     for k in ("重试", "换策略", "超时")), "有")
+            _add("describe_planner 不抛",
+                 isinstance(_me.describe_planner(), str), "有")
+            _add("StepResult.describe 可读",
+                 isinstance(_me.StepResult(step_id="s1", ok=True).describe(),
+                            str), "有")
+            _add("ExecutionResult.to_dict JSON 安全",
+                 __import__("json").dumps(out.to_dict()) != "", "ok")
 
         # ============ 19) 与 5E 接口兼容 ============
         _add("★ 仍有 before_step（5E 挂载点 3/3）",
@@ -1364,10 +1405,12 @@ def selfcheck(quick: bool = True) -> dict:
              "concurrent" in mods, "有")
 
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        if tmp is not None:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     elapsed = time.perf_counter() - t0
     return {
+        "skipped_heavy": n_skipped_heavy,
         "module": "executor",
         "quick": bool(quick),
         "checks": checks,

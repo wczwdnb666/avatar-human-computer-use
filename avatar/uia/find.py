@@ -880,12 +880,47 @@ def closest(el: T.Element, *, control_type=None, name: Optional[str] = None,
     return [e for _, e in scored[:limit]] if limit else [e for _, e in scored]
 
 
-def selfcheck() -> dict:
-    """不依赖具体应用的自检。"""
+#: heavy 档（真查 UIA）的检查项名。quick 档跳过它们并如实记账。
+#: ⚠ 改动 heavy 段时同步这张表 —— 数字偏了自检输出会立刻显形。
+HEAVY_CHECK_NAMES = (
+    "能按类型找顶层窗口",
+    "找不到抛 ElementNotFound",
+    "required=False 返回 None",
+    "exists/count 安全返回",
+    "wait 超时抛异常",
+    "wait_gone 对不存在元素返回 True",
+    "字符串可直接当查询",
+    "窗口内可查控件",
+    "窗口作用域不泄漏",
+)
+
+
+def selfcheck(quick: bool = True) -> dict:
+    """不依赖具体应用的自检。
+
+    ## quick 档（默认）
+
+    只做**纯逻辑**：名称归一化、类型短名解析、Query 描述与 any_of、
+    非法入参类型拒绝。全程不碰 UIA、不碰窗口，实测 < 0.05s。
+
+    ## full 档（``--full``）
+
+    追加**实机查询**：挑一个便宜的靶子窗口，在里面验证"找得到 /
+    找不到要抛 / required=False 返回 None / exists / count / wait 超时 /
+    窗口作用域不泄漏"。
+
+    实测实机段约 1.4s，且随机器负载浮动（桌面上元素越多越慢）——
+    所以归 heavy。挑窗口的逻辑见 ``_pick_probe_window``：挑控件少的窗口，
+    不挑浏览器（那里面几百个控件，光遍历就 8 秒）。
+    """
     checks, failures = [], []
+    skipped_heavy = []
 
     def _add(name, ok, detail, skip=False):
-        """``skip=True`` → 本机环境缺这个资源，标 SKIP，不计入失败。"""
+        """``skip=True`` → 主动跳过重活 / 本机环境缺资源。
+
+        标 SKIP、不计入 failures、不影响退出码。
+        """
         checks.append({"name": name, "ok": bool(ok),
                        "skipped": bool(skip), "detail": detail})
         if skip:
@@ -918,114 +953,128 @@ def selfcheck() -> dict:
     # 而其余 13 个模块 selfcheck 加起来才 8.8 秒。selfcheck 慢到没人愿意用，
     # 等于没有。
     #
-    # 修法：下面凡"预期找不到"的查询一律**限定到一个具体窗口**。
-    # 语义不变（仍然是"找不到要抛 ElementNotFound"），但搜索空间
-    # 从整棵桌面树缩到一个窗口子树。
+    # 修法分两步：
+    #   1) 凡"预期找不到"的查询一律**限定到一个具体窗口**。
+    #      语义不变（仍然是"找不到要抛 ElementNotFound"），但搜索空间
+    #      从整棵桌面树缩到一个窗口子树。
+    #   2) 整个实机段归 **heavy** —— 即便限定到窗口，仍要 1.4s 量级，
+    #      且随桌面元素数量浮动。quick 档只跑上面的纯逻辑。
     #
     # 全桌面路径的覆盖交给 tests/test_phase2_uia.py —— 那儿有全套
     # 跨窗口、多通道的验证，慢一点无所谓。
-    probe = _pick_probe_window()
+    if quick:
+        for _nm in HEAVY_CHECK_NAMES:
+            _add(_nm, False, "实机查询（真查 UIA），quick 档跳过", skip=True)
+    else:
+        probe = _pick_probe_window()
 
-    if probe is None:
-        # 没有可用窗口：跳过实机项。如实标 SKIP（不是谎报通过，也不是 FAIL）
-        # —— 环境里没有窗口可查，不是 find 的代码有问题。
-        _add("实机检查", False, "无可用窗口，实机项跳过", skip=True)
-        return {"checks": checks, "failures": failures,
-                "skipped": [c["name"] for c in checks if c.get("skipped")],
-                "ok": not failures}
+        if probe is None:
+            # 没有可用窗口：跳过实机项。如实标 SKIP（不是谎报通过，也不是 FAIL）
+            # —— 环境里没有窗口可查，不是 find 的代码有问题。
+            _add("实机检查", False, "无可用窗口，实机项跳过", skip=True)
+            return {"checks": checks, "failures": failures,
+                    "skipped": [c["name"] for c in checks if c.get("skipped")],
+                    "skipped_heavy": len(skipped_heavy),
+                    "quick": bool(quick), "ok": not failures}
 
-    probe_hwnd = probe.hwnd
+        probe_hwnd = probe.hwnd
 
-    # 5. 按类型找顶层窗口（实机，走窗口枚举通道）
-    try:
-        got = find_all(Query(control_type="window"), limit=3)
-        _add("能按类型找顶层窗口", len(got) > 0, "找到 %d 个 window" % len(got))
-    except Exception as exc:      # noqa: BLE001
-        _add("能按类型找顶层窗口", False, "%s: %s" % (type(exc).__name__, exc))
+        # 5. 按类型找顶层窗口（实机，走窗口枚举通道）
+        try:
+            got = find_all(Query(control_type="window"), limit=3)
+            _add("能按类型找顶层窗口", len(got) > 0,
+                 "找到 %d 个 window" % len(got))
+        except Exception as exc:      # noqa: BLE001
+            _add("能按类型找顶层窗口", False,
+                 "%s: %s" % (type(exc).__name__, exc))
 
-    # 6. 找不到时抛 ElementNotFound（而不是返回 None）—— 限定窗口内
-    try:
-        find_one(Query(automation_id="绝不存在的控件ID_XYZ_12345",
-                       window=probe_hwnd))
-        _add("找不到抛 ElementNotFound", False, "没有抛异常")
-    except ElementNotFound:
-        _add("找不到抛 ElementNotFound", True, "正确抛出")
-    except Exception as exc:      # noqa: BLE001
-        _add("找不到抛 ElementNotFound", False,
-             "抛了别的：%s" % type(exc).__name__)
+        # 6. 找不到时抛 ElementNotFound（而不是返回 None）—— 限定窗口内
+        try:
+            find_one(Query(automation_id="绝不存在的控件ID_XYZ_12345",
+                           window=probe_hwnd))
+            _add("找不到抛 ElementNotFound", False, "没有抛异常")
+        except ElementNotFound:
+            _add("找不到抛 ElementNotFound", True, "正确抛出")
+        except Exception as exc:      # noqa: BLE001
+            _add("找不到抛 ElementNotFound", False,
+                 "抛了别的：%s" % type(exc).__name__)
 
-    # 7. required=False 返回 None
-    _add("required=False 返回 None",
-         find_one(Query(automation_id="绝不存在的控件ID_XYZ_12345",
-                        window=probe_hwnd), required=False) is None,
-         "不抛异常")
+        # 7. required=False 返回 None
+        _add("required=False 返回 None",
+             find_one(Query(automation_id="绝不存在的控件ID_XYZ_12345",
+                            window=probe_hwnd), required=False) is None,
+             "不抛异常")
 
-    # 8. exists / count 不抛 —— 同样限定窗口
-    _add("exists/count 安全返回",
-         exists(Query(automation_id="绝不存在的控件ID_XYZ",
-                      window=probe_hwnd)) is False
-         and count(Query(automation_id="绝不存在的控件ID_XYZ",
-                         window=probe_hwnd)) == 0,
-         "未知条件 → False / 0")
+        # 8. exists / count 不抛 —— 同样限定窗口
+        _add("exists/count 安全返回",
+             exists(Query(automation_id="绝不存在的控件ID_XYZ",
+                          window=probe_hwnd)) is False
+             and count(Query(automation_id="绝不存在的控件ID_XYZ",
+                             window=probe_hwnd)) == 0,
+             "未知条件 → False / 0")
 
-    # 9. wait 超时抛 ElementNotFound 且带耗时语义
-    try:
-        t0 = time.monotonic()
-        wait(Query(automation_id="绝不存在的控件ID_XYZ",
-                   window=probe_hwnd), timeout=0.3)
-        _add("wait 超时抛异常", False, "没有抛")
-    except ElementNotFound:
-        elapsed = time.monotonic() - t0
-        _add("wait 超时抛异常", elapsed >= 0.25,
-             "等待 %.2fs 后抛出" % elapsed)
-    except Exception as exc:      # noqa: BLE001
-        _add("wait 超时抛异常", False, "抛了别的：%s" % type(exc).__name__)
+        # 9. wait 超时抛 ElementNotFound 且带耗时语义
+        try:
+            t0 = time.monotonic()
+            wait(Query(automation_id="绝不存在的控件ID_XYZ",
+                       window=probe_hwnd), timeout=0.3)
+            _add("wait 超时抛异常", False, "没有抛")
+        except ElementNotFound:
+            elapsed = time.monotonic() - t0
+            _add("wait 超时抛异常", elapsed >= 0.25,
+                 "等待 %.2fs 后抛出" % elapsed)
+        except Exception as exc:      # noqa: BLE001
+            _add("wait 超时抛异常", False, "抛了别的：%s" % type(exc).__name__)
 
-    # 10. wait_gone 立即返回（元素本来就不存在）
-    _add("wait_gone 对不存在元素返回 True",
-         wait_gone(Query(automation_id="绝不存在的控件ID_XYZ",
-                         window=probe_hwnd), timeout=0.3) is True,
-         "立即判定已消失")
+        # 10. wait_gone 立即返回（元素本来就不存在）
+        _add("wait_gone 对不存在元素返回 True",
+             wait_gone(Query(automation_id="绝不存在的控件ID_XYZ",
+                             window=probe_hwnd), timeout=0.3) is True,
+             "立即判定已消失")
 
-    # 11. str 直接当 name 查询
-    try:
-        find_all("绝不存在的标题XYZ", window=probe_hwnd, limit=1)
-        _add("字符串可直接当查询", True, "str → Query(name=...)")
-    except ElementNotFound:
-        # 限定窗口后确实找不到，这也算"查询被正确构造并执行了"
-        _add("字符串可直接当查询", True, "str → Query(name=...)，窗口内未命中")
-    except Exception as exc:      # noqa: BLE001
-        _add("字符串可直接当查询", False, "%s: %s" % (type(exc).__name__, exc))
+        # 11. str 直接当 name 查询
+        try:
+            find_all("绝不存在的标题XYZ", window=probe_hwnd, limit=1)
+            _add("字符串可直接当查询", True, "str → Query(name=...)")
+        except ElementNotFound:
+            # 限定窗口后确实找不到，这也算"查询被正确构造并执行了"
+            _add("字符串可直接当查询", True, "str → Query(name=...)，窗口内未命中")
+        except Exception as exc:      # noqa: BLE001
+            _add("字符串可直接当查询", False,
+                 "%s: %s" % (type(exc).__name__, exc))
 
-    # 12. 非法入参类型被拒绝（纯参数检查，不涉及搜索）
-    try:
-        find_all(12345)
-        _add("非法查询类型被拒绝", False, "没有抛 TypeError")
-    except TypeError:
-        _add("非法查询类型被拒绝", True, "抛 TypeError")
+        # 12. 非法入参类型被拒绝（纯参数检查，不涉及搜索）
+        try:
+            find_all(12345)
+            _add("非法查询类型被拒绝", False, "没有抛 TypeError")
+        except TypeError:
+            _add("非法查询类型被拒绝", True, "抛 TypeError")
 
-    # 13. 实机：窗口内能找到控件（走通道 B 原生下推）
-    try:
-        inner = find_all(Query(control_type="button"), window=probe_hwnd,
-                         limit=50)
-        _add("窗口内可查控件", True,
-             "0x%X 内 %d 个按钮" % (probe_hwnd, len(inner)))
-    except Exception as exc:      # noqa: BLE001
-        _add("窗口内可查控件", False, "%s: %s" % (type(exc).__name__, exc))
+        # 13. 实机：窗口内能找到控件（走通道 B 原生下推）
+        try:
+            inner = find_all(Query(control_type="button"), window=probe_hwnd,
+                             limit=50)
+            _add("窗口内可查控件", True,
+                 "0x%X 内 %d 个按钮" % (probe_hwnd, len(inner)))
+        except Exception as exc:      # noqa: BLE001
+            _add("窗口内可查控件", False,
+                 "%s: %s" % (type(exc).__name__, exc))
 
-    # 14. 只查窗口元素时不跨窗口串味
-    try:
-        in_win = find_all(Query(control_type="button"), window=probe_hwnd,
-                          limit=50)
-        leaked = [e for e in in_win if e.window != probe_hwnd]
-        _add("窗口作用域不泄漏", not leaked,
-             "%d 个按钮，越界 %d 个" % (len(in_win), len(leaked)))
-    except Exception as exc:      # noqa: BLE001
-        _add("窗口作用域不泄漏", False, "%s: %s" % (type(exc).__name__, exc))
+        # 14. 只查窗口元素时不跨窗口串味
+        try:
+            in_win = find_all(Query(control_type="button"), window=probe_hwnd,
+                              limit=50)
+            leaked = [e for e in in_win if e.window != probe_hwnd]
+            _add("窗口作用域不泄漏", not leaked,
+                 "%d 个按钮，越界 %d 个" % (len(in_win), len(leaked)))
+        except Exception as exc:      # noqa: BLE001
+            _add("窗口作用域不泄漏", False,
+                 "%s: %s" % (type(exc).__name__, exc))
 
     return {"checks": checks, "failures": failures,
             "skipped": [c["name"] for c in checks if c.get("skipped")],
-            "ok": not failures}
+            "skipped_heavy": len(skipped_heavy),
+            "quick": bool(quick), "ok": not failures}
 
 
 def _pick_probe_window():

@@ -745,7 +745,33 @@ def launch_electron(
 # 自检
 # --------------------------------------------------------------------------
 
-def selfcheck() -> Dict[str, Any]:
+#: heavy 段（真 socket 探测）的检查项名。quick 档跳过它们并如实记账。
+#: ⚠ 改动 heavy 段时同步这张表 —— 数字偏了自检输出会立刻显形。
+HEAVY_CHECK_NAMES = (
+    "scan_listen_ports 全表可跑",
+    "全表有监听端口",
+    "端口去重",
+    "端口已排序",
+    "端口都在合法范围",
+    "不含 0 端口",
+    "按 pid 过滤返回子集",
+    "含非 LISTEN 时数量不减",
+    "include_v6=False 返回子集",
+    "本机无监听端口可检 → 跳过",
+    "按 pid 过滤可跑（本进程可能无监听）",
+    "不存在的 pid 返回空",
+    "非 Windows 扫描返回空",
+    "probe_port 在空端口返回 None",
+    "200 但无 webSocketDebuggerUrl → None",
+    "带 webSocketDebuggerUrl → 识别为 CDP",
+    "识别后能取到 ws url",
+    "find_debug_port 从 pid 端口里找到",
+    "find_debug_port extra_ports 优先",
+    "find_debug_port 非 CDP 时返回 None",
+)
+
+
+def selfcheck(quick: bool = True) -> Dict[str, Any]:
     checks = []
     skipped = []
 
@@ -760,90 +786,11 @@ def selfcheck() -> Dict[str, Any]:
         if skip:
             skipped.append(name)
 
-    # --- 字节序转换（最容易错的点） ---
-    add("_ntohs 小端 0x1F90(8080) 还原",
-        _ntohs(socket.htons(8080)) == 8080, _ntohs(socket.htons(8080)))
-    add("_ntohs 处理 0 值", _ntohs(0) == 0)
-    add("_ntohs 截断到 16 位", _ntohs(0xFFFF0000 | socket.htons(9222)) == 9222,
-        _ntohs(0xFFFF0000 | socket.htons(9222)))
+    skipped_heavy: List[str] = []
 
-    # --- 结构体尺寸（对齐错了会读出垃圾） ---
-    if _is_windows:
-        add("MIB_TCPROW_OWNER_PID 尺寸 24",
-            ctypes.sizeof(_MIB_TCPROW_OWNER_PID) == 24,
-            ctypes.sizeof(_MIB_TCPROW_OWNER_PID))
-        add("MIB_TCP6ROW_OWNER_PID 尺寸 56",
-            ctypes.sizeof(_MIB_TCP6ROW_OWNER_PID) == 56,
-            ctypes.sizeof(_MIB_TCP6ROW_OWNER_PID))
-    else:
-        add("非 Windows 跳过结构体尺寸检查", True, "skipped")
-
-    # --- TCP 表扫描（真实调用） ---
-    #
-    # 实测澄清（重要）：**TCP 表扫描本身极快**（``scan_listen_ports()``
-    # 全表只要 0.001s，因为用的是 ``GetExtendedTcpTable`` 一次性拿全量）。
-    # 本模块 selfcheck 的耗时几乎全部来自 ``probe_port`` ——
-    # 对**没有监听的端口**，Windows 不会立刻 RST，而是要等到超时
-    # （实测 ``timeout=0.3`` 就实打实花 0.32s）。所以省时间要省在
-    # probe 的 timeout 上，不是省扫描次数。
-    #
-    # 下面保持所有检查的真调用覆盖 —— 不为省时间削弱语义。
-    ports_all = scan_listen_ports()
-    add("scan_listen_ports 全表可跑", isinstance(ports_all, list))
-    if _is_windows:
-        import os
-        mypid = os.getpid()
-        mine = scan_listen_ports(mypid)
-        nons = scan_listen_ports(0, listening_only=False)
-        v6_off = scan_listen_ports(0, include_v6=False)
-
-        # ⚠ 这一组全部以 ports_all 为**基准**（判格式或判子集关系）。
-        #   Windows 上 ports_all 几乎总是非空，但**环境资源不存在 ≠
-        #   代码有 bug** —— 空基准时判 SKIP，不能判 FAIL。
-        #
-        #   而且空基准下后果分两种，都坏：
-        #     · `all(...)` / `0 not in []` / `[] == sorted([])` → 恒 True（**假通过**）
-        #     · `set(真实) <= set([])` → 恒 False（**假红**）
-        #   假通过比假红更坏 —— 它让人以为验过了。
-        if ports_all:
-            add("全表有监听端口", True, len(ports_all))
-            add("端口去重", len(ports_all) == len(set(ports_all)))
-            add("端口已排序", ports_all == sorted(ports_all))
-            add("端口都在合法范围",
-                all(1 <= p <= 65535 for p in ports_all))
-            add("不含 0 端口", 0 not in ports_all)
-            add("按 pid 过滤返回子集",
-                set(mine) <= set(ports_all), (len(mine), len(ports_all)))
-            add("含非 LISTEN 时数量不减", len(nons) >= len(ports_all),
-                (len(nons), len(ports_all)))
-            # 真调用：不含 v6 时结果应是子集（v6 端口确实被排除）
-            add("include_v6=False 返回子集",
-                set(v6_off) <= set(ports_all))
-        else:
-            for nm in ("全表有监听端口", "端口去重", "端口已排序",
-                       "端口都在合法范围", "不含 0 端口",
-                       "按 pid 过滤返回子集", "含非 LISTEN 时数量不减",
-                       "include_v6=False 返回子集"):
-                add(nm, False, "本机无监听端口可检 → 跳过", skip=True)
-
-        # 下面两项是**绝对契约**，不拿全表当基准，所以照样验
-        add("按 pid 过滤可跑（本进程可能无监听）",
-            isinstance(mine, list))
-        add("不存在的 pid 返回空", scan_listen_ports(999999) == [])
-    else:
-        add("非 Windows 扫描返回空", ports_all == [])
-
-    # --- probe_port 判据 ---
-    #
-    # ⚠ ``timeout=0.05`` 而不是 0.3：49521 上没有服务，Windows 不会
-    #   立刻回 RST，连接要**等满超时**才放弃。实测 ``timeout=0.3``
-    #   就实打实花掉 0.32s（本模块 selfcheck 的主要耗时来源）。
-    #   "返回 None"这个结论在 50ms 内不会变 —— 因为压根没有服务在听。
-    #   这里的 timeout 是"连接尝试的上限"，不是"等待结果的时间"。
-    add("probe_port 在空端口返回 None",
-        probe_port(49521, timeout=0.05) is None)
-
-    # 用本地假 HTTP 服务验证"200 但不是 CDP 要判 None"
+    # 假 HTTP 服务的 handler —— 定义在 setup 区（类定义本身不耗时），
+    # 因为 heavy 段和它后面的反证段都要用它。
+    # 放 heavy 段里的话，quick 档跳过该段后，后面那两处会 UnboundLocalError。
     import http.server
     import threading
 
@@ -870,44 +817,140 @@ def selfcheck() -> Dict[str, Any]:
         def log_message(self, *a):
             pass
 
-    srv = None
-    try:
-        _Handler.mode = "plain"
-        srv = http.server.HTTPServer(("127.0.0.1", 49522), _Handler)
-        t = threading.Thread(target=srv.serve_forever, daemon=True)
-        t.start()
-        time.sleep(0.15)
+    # --- 字节序转换（最容易错的点） ---
+    add("_ntohs 小端 0x1F90(8080) 还原",
+        _ntohs(socket.htons(8080)) == 8080, _ntohs(socket.htons(8080)))
+    add("_ntohs 处理 0 值", _ntohs(0) == 0)
+    add("_ntohs 截断到 16 位", _ntohs(0xFFFF0000 | socket.htons(9222)) == 9222,
+        _ntohs(0xFFFF0000 | socket.htons(9222)))
 
-        add("200 但无 webSocketDebuggerUrl → None",
-            probe_port(49522, timeout=1.0) is None)
+    # --- 结构体尺寸（对齐错了会读出垃圾） ---
+    if _is_windows:
+        add("MIB_TCPROW_OWNER_PID 尺寸 24",
+            ctypes.sizeof(_MIB_TCPROW_OWNER_PID) == 24,
+            ctypes.sizeof(_MIB_TCPROW_OWNER_PID))
+        add("MIB_TCP6ROW_OWNER_PID 尺寸 56",
+            ctypes.sizeof(_MIB_TCP6ROW_OWNER_PID) == 56,
+            ctypes.sizeof(_MIB_TCP6ROW_OWNER_PID))
+    else:
+        add("非 Windows 跳过结构体尺寸检查", True, "skipped")
 
-        _Handler.mode = "cdp"
-        got = probe_port(49522, timeout=1.0)
-        add("带 webSocketDebuggerUrl → 识别为 CDP", got is not None, got)
-        add("识别后能取到 ws url",
-            (got or {}).get("webSocketDebuggerUrl", "").startswith("ws://"),
-            (got or {}).get("webSocketDebuggerUrl"))
+    # ================= heavy 档：真 socket 探测 =================
+    #
+    # ⚠ 这一段**真的建 socket**：扫 TCP 表、起本地假 HTTP 服务、
+    #   对空端口做连接尝试（Windows 上不会立刻 RST，要等满 timeout）。
+    #   实测 select 1.21s + sleep 0.45s + connect 0.43s ≈ 2.1s ——
+    #   是 CI 上超 3s 红线的主因，也随机器负载浮动。
+    #   归 heavy：默认档不跑，--full 才跑。
+    if quick:
+        for _nm in HEAVY_CHECK_NAMES:
+            skipped_heavy.append(_nm)
+    else:
+        # --- TCP 表扫描（真实调用） ---
+        #
+        # 实测澄清（重要）：**TCP 表扫描本身极快**（``scan_listen_ports()``
+        # 全表只要 0.001s，因为用的是 ``GetExtendedTcpTable`` 一次性拿全量）。
+        # 本模块 selfcheck 的耗时几乎全部来自 ``probe_port`` ——
+        # 对**没有监听的端口**，Windows 不会立刻 RST，而是要等到超时
+        # （实测 ``timeout=0.3`` 就实打实花 0.32s）。所以省时间要省在
+        # probe 的 timeout 上，不是省扫描次数。
+        #
+        # 下面保持所有检查的真调用覆盖 —— 不为省时间削弱语义。
+        ports_all = scan_listen_ports()
+        add("scan_listen_ports 全表可跑", isinstance(ports_all, list))
+        if _is_windows:
+            import os
+            mypid = os.getpid()
+            mine = scan_listen_ports(mypid)
+            nons = scan_listen_ports(0, listening_only=False)
+            v6_off = scan_listen_ports(0, include_v6=False)
 
-        # find_debug_port 用本进程 pid 应能找到（假服务由本进程线程持有）
-        import os as _os
-        found = find_debug_port(_os.getpid(), timeout=1.0)
-        add("find_debug_port 从 pid 端口里找到",
-            found == 49522, (found, _os.getpid()))
-        add("find_debug_port extra_ports 优先",
-            find_debug_port(999999, extra_ports=[49522], timeout=1.0) == 49522)
+            # ⚠ 这一组全部以 ports_all 为**基准**（判格式或判子集关系）。
+            #   Windows 上 ports_all 几乎总是非空，但**环境资源不存在 ≠
+            #   代码有 bug** —— 空基准时判 SKIP，不能判 FAIL。
+            #
+            #   而且空基准下后果分两种，都坏：
+            #     · `all(...)` / `0 not in []` / `[] == sorted([])` → 恒 True（**假通过**）
+            #     · `set(真实) <= set([])` → 恒 False（**假红**）
+            #   假通过比假红更坏 —— 它让人以为验过了。
+            if ports_all:
+                add("全表有监听端口", True, len(ports_all))
+                add("端口去重", len(ports_all) == len(set(ports_all)))
+                add("端口已排序", ports_all == sorted(ports_all))
+                add("端口都在合法范围",
+                    all(1 <= p <= 65535 for p in ports_all))
+                add("不含 0 端口", 0 not in ports_all)
+                add("按 pid 过滤返回子集",
+                    set(mine) <= set(ports_all), (len(mine), len(ports_all)))
+                add("含非 LISTEN 时数量不减", len(nons) >= len(ports_all),
+                    (len(nons), len(ports_all)))
+                # 真调用：不含 v6 时结果应是子集（v6 端口确实被排除）
+                add("include_v6=False 返回子集",
+                    set(v6_off) <= set(ports_all))
+            else:
+                for nm in ("全表有监听端口", "端口去重", "端口已排序",
+                           "端口都在合法范围", "不含 0 端口",
+                           "按 pid 过滤返回子集", "含非 LISTEN 时数量不减",
+                           "include_v6=False 返回子集"):
+                    add(nm, False, "本机无监听端口可检 → 跳过", skip=True)
 
-        _Handler.mode = "plain"
-        add("find_debug_port 非 CDP 时返回 None",
-            find_debug_port(999999, extra_ports=[49522],
-                            include_v6_loopback=False,
-                            timeout=0.5) is None)
-    finally:
-        if srv is not None:
-            try:
-                srv.shutdown()
-                srv.server_close()
-            except Exception:
-                pass
+            # 下面两项是**绝对契约**，不拿全表当基准，所以照样验
+            add("按 pid 过滤可跑（本进程可能无监听）",
+                isinstance(mine, list))
+            add("不存在的 pid 返回空", scan_listen_ports(999999) == [])
+        else:
+            add("非 Windows 扫描返回空", ports_all == [])
+
+        # --- probe_port 判据 ---
+        #
+        # ⚠ ``timeout=0.05`` 而不是 0.3：49521 上没有服务，Windows 不会
+        #   立刻回 RST，连接要**等满超时**才放弃。实测 ``timeout=0.3``
+        #   就实打实花掉 0.32s（本模块 selfcheck 的主要耗时来源）。
+        #   "返回 None"这个结论在 50ms 内不会变 —— 因为压根没有服务在听。
+        #   这里的 timeout 是"连接尝试的上限"，不是"等待结果的时间"。
+        add("probe_port 在空端口返回 None",
+            probe_port(49521, timeout=0.05) is None)
+
+        # 用本地假 HTTP 服务验证"200 但不是 CDP 要判 None"
+
+        srv = None
+        try:
+            _Handler.mode = "plain"
+            srv = http.server.HTTPServer(("127.0.0.1", 49522), _Handler)
+            t = threading.Thread(target=srv.serve_forever, daemon=True)
+            t.start()
+            time.sleep(0.15)
+
+            add("200 但无 webSocketDebuggerUrl → None",
+                probe_port(49522, timeout=1.0) is None)
+
+            _Handler.mode = "cdp"
+            got = probe_port(49522, timeout=1.0)
+            add("带 webSocketDebuggerUrl → 识别为 CDP", got is not None, got)
+            add("识别后能取到 ws url",
+                (got or {}).get("webSocketDebuggerUrl", "").startswith("ws://"),
+                (got or {}).get("webSocketDebuggerUrl"))
+
+            # find_debug_port 用本进程 pid 应能找到（假服务由本进程线程持有）
+            import os as _os
+            found = find_debug_port(_os.getpid(), timeout=1.0)
+            add("find_debug_port 从 pid 端口里找到",
+                found == 49522, (found, _os.getpid()))
+            add("find_debug_port extra_ports 优先",
+                find_debug_port(999999, extra_ports=[49522], timeout=1.0) == 49522)
+
+            _Handler.mode = "plain"
+            add("find_debug_port 非 CDP 时返回 None",
+                find_debug_port(999999, extra_ports=[49522],
+                                include_v6_loopback=False,
+                                timeout=0.5) is None)
+        finally:
+            if srv is not None:
+                try:
+                    srv.shutdown()
+                    srv.server_close()
+                except Exception:
+                    pass
 
     # --- ElectronApp 契约 ---
     e = ElectronApp(1234, 5678, "Code.exe", "electron", "main.py")
@@ -1023,6 +1066,8 @@ def selfcheck() -> Dict[str, Any]:
     failures = [c["name"] for c in checks
                 if not c["ok"] and not c.get("skipped")]
     return {"checks": checks, "failures": failures, "skipped": skipped,
+            "skipped_heavy": len(skipped_heavy),
+            "quick": bool(quick),
             "ok": not failures, "module": "web_cdp.electron"}
 
 
