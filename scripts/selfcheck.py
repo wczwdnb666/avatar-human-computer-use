@@ -177,18 +177,6 @@ MODULE_SELFCHECKS = [
     ("视觉LLM", "avatar.vision.prompts"),
     ("视觉LLM", "avatar.vision.validator"),
     ("视觉LLM", "avatar.vision.cost"),
-    # ---- 阶段九：交互外壳（**独立包**）----
-    # ⚠ 注意 ``avatar_shell`` 不在 ``avatar/`` 里面，它**不 import avatar**
-    #   （硬约束 2：外壳与主包只通过 stdio / MCP 通信）。所以它天然
-    #   不参与主包的依赖图 —— 放最后，挂了也不影响主包。
-    #
-    # 顺序由底向上：state 是纯状态机（零 IO，最快）；
-    # menu 是纯函数构建菜单项；ball 要真建分层窗口（碰 GDI）；
-    # bridge 要起 MCP 子进程（最慢，也最可能受环境影响）。
-    ("外壳", "avatar_shell.state"),
-    ("外壳", "avatar_shell.menu"),
-    ("外壳", "avatar_shell.ball"),
-    ("外壳", "avatar_shell.bridge"),
 ]
 
 #: 集成测试文件（相对仓库根）
@@ -227,7 +215,6 @@ TEST_FILES = [
     "tests/test_phase8_validator.py",
     "tests/test_phase8_cost.py",
     "tests/test_phase8_chain.py",
-    "tests/test_phase9_shell.py",
 ]
 
 # --------------------------------------------------------------------------
@@ -2215,148 +2202,6 @@ def check_phase8_hard_constraints():
     return passed, total, failures
 
 
-# --------------------------------------------------------------------------
-# 阶段九：交互外壳（独立包）
-# --------------------------------------------------------------------------
-def check_phase9_hard_constraints():
-    """阶段九的硬约束 —— 交互外壳（``avatar_shell``）。
-
-    ⚠ 外壳是**独立包**，不在 ``avatar/`` 里。
-
-    这里只做**静态**检查（AST 扫源码 + 读状态机转换表）：
-    **不启动 GUI、不建窗口、不起子进程**。那些放在
-    ``tests/test_phase9_shell.py`` 和 ``python -m avatar_shell --selftest``
-    里 —— 自检必须能在无桌面环境跑完。
-
-    三条硬约束：
-
-    1. **不引入第三方 UI 框架** —— 一个 40x40 的球不该背 200MB 运行时
-    2. **不 import avatar** —— 只通过 stdio / MCP 通信
-    3. **故障隔离** —— 独立进程，它挂了主包照常跑
-    """
-    import ast as _ast
-
-    passed = total = 0
-    failures = []
-
-    def item(name, ok, detail="", soft=False):
-        nonlocal passed, total
-        total += 1
-        if ok:
-            passed += 1
-            print("  %s %-46s %s" % (C.ok("[OK]"), name, C.dim(detail)))
-        elif soft:
-            passed += 1
-            print("  %s %-46s %s" % (C.warn("[--]"), name, C.dim(detail)))
-        else:
-            failures.append((name, detail))
-            print("  %s %-46s %s" % (C.fail("[FAIL]"), name, detail))
-
-    print()
-    print(C.dim("── 阶段九：交互外壳（独立包） ") + C.dim("─" * 28))
-
-    shell_dir = os.path.join(ROOT, "avatar_shell")
-    if not os.path.isdir(shell_dir):
-        item("外壳目录存在", False, shell_dir)
-        return passed, total, failures
-
-    # ================= A. 三条硬约束（AST 静态扫描）=================
-    #: 第三方 UI 框架黑名单。外壳只许用 ctypes / winsound / 标准库。
-    UI_FRAMEWORKS = {
-        "PyQt5", "PyQt6", "PySide2", "PySide6", "wx", "wxPython",
-        "kivy", "tkinter", "customtkinter", "flet", "eel", "webview",
-        "pystray", "pyglet", "pygame", "toga", "qtpy",
-    }
-
-    ui_hits, avatar_hits, no_doc = [], [], []
-    files = sorted(f for f in os.listdir(shell_dir) if f.endswith(".py"))
-    for fn in files:
-        src = open(os.path.join(shell_dir, fn), encoding="utf-8").read()
-        tree = _ast.parse(src)
-        if not _ast.get_docstring(tree):
-            no_doc.append(fn)
-        for node in _ast.walk(tree):
-            tops = []
-            if isinstance(node, _ast.Import):
-                tops = [(a.name or "").split(".")[0] for a in node.names]
-            elif isinstance(node, _ast.ImportFrom) and node.level == 0:
-                tops = [(node.module or "").split(".")[0]]
-            for t in tops:
-                if t in UI_FRAMEWORKS:
-                    ui_hits.append("%s:%s" % (fn, t))
-                if t == "avatar":
-                    avatar_hits.append("%s:%s" % (fn, t))
-
-    item("① 不引入第三方 UI 框架（硬约束 1）", not ui_hits,
-         "只用 ctypes / winsound" if not ui_hits else str(ui_hits[:3]))
-    item("② 不 import avatar（硬约束 2）", not avatar_hits,
-         "只走 stdio / MCP" if not avatar_hits else str(avatar_hits[:3]))
-    item("⑨ 每个 .py 都有模块 docstring", not no_doc,
-         "%d 个文件齐备" % len(files) if not no_doc else str(no_doc))
-
-    try:
-        bridge_src = open(os.path.join(shell_dir, "bridge.py"),
-                          encoding="utf-8").read()
-        item("③ 故障隔离：独立进程（硬约束 3）",
-             "subprocess" in bridge_src and "Popen" in bridge_src,
-             "bridge 用 subprocess 拉起主包")
-    except OSError as exc:
-        item("③ 故障隔离：独立进程", False, str(exc))
-
-    # ================= B. 状态机契约 =================
-    try:
-        from avatar_shell import state as ST
-    except Exception as exc:      # noqa: BLE001
-        item("能 import 外壳状态机", False,
-             "%s: %s" % (type(exc).__name__, exc))
-        return passed, total, failures
-
-    states = {s.value for s in ST.AgentState}
-    item("状态机四态齐备",
-         states == {"idle", "running", "needs_human", "error"},
-         " / ".join(sorted(states)))
-
-    # --- error 不能自己"恢复" ---
-    # ⚠ 不断言"出边只有 reset" —— error 允许有一条幂等自环
-    #   （error 状态下再报一次 error 不算状态变更）。要守的是
-    #   **它不能靠 start / done / need_human / resumed 溜出去**。
-    err_events = {ev for (st, ev) in ST.TRANSITIONS if str(st) == "error"}
-    leak = err_events & {ST.EVENT_START, ST.EVENT_DONE,
-                         ST.EVENT_NEED_HUMAN, ST.EVENT_RESUMED}
-    item("★ error 不能自己「恢复」（只有 reset 能出去）",
-         not leak, "出边 = %s" % (sorted(err_events) or "无"))
-
-    # --- needs_human 只能靠 resumed 回 running ---
-    nh_to_running = {
-        ev for (st, ev), dst in ST.TRANSITIONS.items()
-        if str(st) == "needs_human" and str(dst) == "running"
-    }
-    item("★ needs_human 只能靠 resumed 回 running",
-         nh_to_running == {ST.EVENT_RESUMED},
-         "触发事件 = %s" % (sorted(nh_to_running) or "无"))
-
-    item("四种状态都有颜色", len(ST.STATE_COLORS) == 4,
-         " / ".join(sorted(ST.STATE_COLORS)))
-    try:
-        # ⚠ 只在**会闪的**状态里比快慢。IDLE / ERROR 的周期是 0.0，
-        #   那是"不闪"的占位值，不是"闪得最快" —— 直接取 min 会误判。
-        blinking = {str(k): v[1] for k, v in ST.STATE_ANIMATION.items()
-                    if v[0]}
-        item("★ needs_human 闪得最快（要人立刻看见）",
-             blinking.get("needs_human") == min(blinking.values()),
-             " / ".join("%s=%.1fs" % (k, v)
-                        for k, v in sorted(blinking.items())))
-        item("★ error 不闪（已经停了，不是要你管）",
-             ST.STATE_ANIMATION[ST.AgentState.ERROR][0] is False, "静止")
-    except (KeyError, IndexError, TypeError) as exc:
-        item("动画表可读", False, str(exc))
-
-    return passed, total, failures
-
-
-# --------------------------------------------------------------------------
-# 阶段五：风控硬约束 + 环境可用性
-# --------------------------------------------------------------------------
 def check_phase5_hard_constraints():
     """阶段五的硬约束与环境可用性。
 
@@ -2924,14 +2769,6 @@ def main(argv=None):
     else:
         p8p = p8t = 0
 
-    # 阶段九专项：交互外壳（独立包）。默认就跑。
-    if not args.only or args.only.lower() in (
-            "phase9", "shell", "avatar_shell", "外壳", "悬浮球"):
-        p9p, p9t, p9f = check_phase9_hard_constraints()
-        all_fail += [("阶段九", f[0], "", f[1]) for f in p9f]
-    else:
-        p9p = p9t = 0
-
     tp = tt = 0
     if args.tests:
         tp, tt, tf = run_test_files(args.only, verbose=not args.quiet)
@@ -2956,8 +2793,6 @@ def main(argv=None):
         head += "   阶段七 %d/%d" % (p7p, p7t)
     if p8t:
         head += "   阶段八 %d/%d" % (p8p, p8t)
-    if p9t:
-        head += "   阶段九 %d/%d" % (p9p, p9t)
     if args.tests:
         head += "   集成测试 %d/%d" % (tp, tt)
     print(head)

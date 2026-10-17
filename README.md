@@ -96,7 +96,7 @@ python examples/demo_recorder.py --with-gui   # 带上会动鼠标的
 
 ---
 
-## 九个阶段
+## 八个阶段
 
 | 阶段 | 解决什么 | 状态 |
 |---|---|---|
@@ -108,7 +108,6 @@ python examples/demo_recorder.py --with-gui   # 带上会动鼠标的
 | **六** 规划 | 一句话 → DAG → 执行 → 自愈 | ✅ |
 | **七** 多模态 | OCR / 视觉链 / LLM / **MCP** | ✅ |
 | **八** 视觉大模型 | 五层链最后一层 + **四道坐标闸门** | ✅ |
-| **九** 交互外壳 | ORB 式悬浮球（**独立包**，不 import 主包） | ✅ |
 
 ### 八条铁律
 
@@ -207,41 +206,6 @@ python -m avatar mcp --list                  # 工具清单
 
 ---
 
-## 交互外壳（ORB 式悬浮球）
-
-一个 40x40 的桌面悬浮球。**看** Avatar 在干什么，**控** 它做什么。
-
-```bash
-python -m avatar_shell                    # 启动
-python -m avatar_shell --selftest         # 自检
-python -m avatar_shell --position br      # 指定初始位置（tl/tr/bl/br）
-```
-
-| 状态 | 颜色 | 动效 | 含义 |
-|---|---|---|---|
-| 空闲 | 灰 | 静止 | 没任务在跑 |
-| 运行中 | 绿 | 呼吸 1.2s | 正常执行 |
-| **需要人工** | **橙** | **闪 + 提示音 0.5s** | **它在等你** |
-| 出错 | 红 | 静止 | 已经停了，不闪 |
-
-> 橙色闪得最快（0.5s）是有意的：**"需要人工"是唯一需要你立刻看一眼的状态**。
-> 红色反而不闪 —— 闪是"要你管"，错是"已经停了"。
-
-右键菜单：启动任务 / 查看任务 / 暂停 / 显示状态 / 退出。
-
-**三条硬约束**（写在 [`avatar_shell/__init__.py`](avatar_shell/__init__.py)）：
-
-1. **不引入第三方 UI 框架** —— 不用 Electron / Tauri / PyQt。
-   透明窗口走 `WS_EX_LAYERED` + `UpdateLayeredWindow`，菜单走原生
-   `TrackPopupMenu`，提示音走标准库 `winsound`。
-   一个 40x40 的球不该背 200MB 运行时。
-2. **不 import avatar** —— 外壳与主包只通过 **stdio / MCP** 通信。
-   外壳可以独立替换，主包保持零依赖。
-3. **故障隔离** —— 外壳是独立进程。它挂了，Avatar 照常跑任务，
-   只是没人给你显示状态了。
-
-详见 [avatar_shell/README.md](avatar_shell/README.md)。
-
 ---
 
 ## 自检
@@ -255,7 +219,6 @@ python scripts/selfcheck.py --list         # 只列出会跑什么
 
 python -m pytest tests/ -q                 # 全部测试（约 5 分钟，会动鼠标）
 
-python -m avatar_shell --selftest          # 外壳自检（独立包）
 ```
 
 **当前状态**（`selfcheck.py` 实测）
@@ -415,7 +378,6 @@ python -m pip install -e ".[uia,vision]"    # 只加想要的增强
 | [llm_backend.md](docs/llm_backend.md) | **多模型适配** |
 | [mcp.md](docs/mcp.md) | **MCP 使用指南** |
 | [vision_llm.md](docs/vision_llm.md) | **视觉大模型层（四道坐标闸门）** |
-| [avatar_shell/README.md](avatar_shell/README.md) | **交互外壳（悬浮球）** |
 
 ### 技术文章
 
