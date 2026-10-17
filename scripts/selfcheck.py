@@ -182,6 +182,8 @@ MODULE_SELFCHECKS = [
 #: 集成测试文件（相对仓库根）
 TEST_FILES = [
     "tests/test_phase1.py",
+    # CLI 参数解析与输出格式（_parse_hwnd 同名覆盖坑的回归测试）
+    "tests/test_cli.py",
     "tests/test_phase2_com.py",
     "tests/test_phase2_windows.py",
     "tests/test_phase2_uia.py",

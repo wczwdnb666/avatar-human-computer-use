@@ -272,12 +272,27 @@ def cmd_pick(a):
 # 纯 ctypes 写 BMP —— 不引入 Pillow
 # --------------------------------------------------------------------------
 def _write_bmp(path: str, bmp) -> None:
-    """把 Bitmap 写成 24 位 BMP。
+    """把 Bitmap 写成图片。**按扩展名决定格式**：``.png`` 走 PNG，
+    其余走 24 位 BMP。
+
+    ## 为什么加 PNG
+
+    BMP 只有本项目的工具能读，`Read` 之类的图片查看器打不开 ——
+    每次抓完图都要手动转一道，很烦。PNG 直接用
+    :func:`avatar.vision.image_prep.encode_png`（项目自带的纯 Python
+    编码器，零依赖），一行代码的事。
+
+    ## BMP 为什么是 24 位
 
     BMP 是自下而上存储的，而我们的 Bitmap 已经是 DIB 内存序
     （也是自下而上），所以**逐行直接拷贝即可，不需要翻转**。
     每行按 4 字节对齐补零。
     """
+    if str(path).lower().endswith(".png"):
+        from avatar.vision.image_prep import encode_png
+        with open(path, "wb") as f:
+            f.write(encode_png(bmp))
+        return
     w, h = bmp.width, bmp.height
     row_raw = w * 3
     pad = (4 - (row_raw % 4)) % 4
@@ -309,17 +324,41 @@ def _write_bmp(path: str, bmp) -> None:
                 f.write(padz)
 
 
-def _parse_hwnd(a) -> int:
-    v = a.hwnd
+def _parse_hwnd(a, *, fallback: bool = True) -> int:
+    """解析窗口句柄。
+
+    ## 兼容三种入参
+
+    - argparse 的 Namespace（自动取 ``.hwnd``）
+    - ``int``（原样返回）
+    - 字符串（十进制或 ``0x`` 前缀十六进制）
+
+    ## 为什么要兼容
+
+    历史上有两份同名实现，一份收 Namespace、一份收裸值，
+    后定义的那份**覆盖**了前一份 —— 结果所有传 Namespace 的
+    调用点全部拿到 ``None``，``shot --hwnd`` 直接崩。
+    合并成一份，两种用法都认，这类"静默覆盖"就不会再发生。
+
+    ``fallback=True`` 且值为 None 时回退到前台窗口。
+    """
+    v = a.hwnd if hasattr(a, "hwnd") else a
     if isinstance(v, int):
         return v
     if v is None:
-        # 没给 hwnd，就用前台窗口
+        if not fallback:
+            return 0
         h = P.foreground_hwnd()
         if not h:
             raise SystemExit("没有前台窗口，且未指定 --hwnd")
         return h
     s = str(v).strip()
+    if not s:
+        # ⚠ 空串**不**回退前台 —— 那是"用户给了 --hwnd 但值是空的"，
+        #   属于输入错误。回退前台会把笔误变成"悄悄抓了别的窗口"，
+        #   比报错危险得多。没给参数（None）才走前台回退。
+        raise SystemExit("无法解析 hwnd: %r（空值；省略 --hwnd 才会用前台窗口）"
+                         % v)
     try:
         return int(s, 16) if s.lower().startswith("0x") else int(s)
     except ValueError:
@@ -1276,19 +1315,6 @@ def _quiet_close(sess) -> None:
         sess.close()
     except Exception:      # noqa: BLE001
         pass
-
-
-def _parse_hwnd(value):
-    """解析 hwnd 参数：支持十进制与 0x 十六进制。"""
-    if value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    s = str(value).strip()
-    try:
-        return int(s, 16) if s.lower().startswith("0x") else int(s)
-    except ValueError:
-        return None
 
 
 def cmd_verify_hook(a):
