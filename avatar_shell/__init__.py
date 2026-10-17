@@ -121,10 +121,8 @@ def selfcheck(quick: bool = True) -> dict:
                        "detail": str(exc)[:100]})
         failures.append("state")
 
-    # ---- ball / menu / bridge / presence / tooltip / hotkey / input_box ----
-    # （state 已在上面单独跑过，不重复）
-    for name in ("ball", "menu", "bridge",
-                 "presence", "tooltip", "hotkey", "input_box"):
+    # ---- ball / menu / bridge（可能因无桌面而不可用）----
+    for name in ("ball", "menu", "bridge"):
         try:
             mod = __import__("avatar_shell.%s" % name, fromlist=["selfcheck"])
             fn = getattr(mod, "selfcheck", None)

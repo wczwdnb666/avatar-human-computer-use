@@ -91,17 +91,11 @@ class AgentState(str, Enum):
 #: 选色原则：**色相差异优先于明度差异** ——
 #: 小尺寸的悬浮球上，明度差异在浅色/深色桌面上表现不一致，
 #: 色相差异（灰/绿/橙/红）一眼能分清。
-#: 状态 → 颜色（DeepSeek Orb 风格的精确色值，2026-10-17 定稿）。
-#:
-#: - idle        #808080 灰     —— 静止，不抢视线
-#: - running     #22C55E 绿     —— 呼吸，表示"在动"
-#: - needs_human #F97316 橙     —— 闪烁，**唯一抢注意力的状态**
-#: - error       #EF4444 红     —— 静止（闪了像"正在处理"，错）
 STATE_COLORS: Dict[str, Tuple[int, int, int]] = {
-    AgentState.IDLE: (128, 128, 128),        # 0x808080
-    AgentState.RUNNING: (34, 197, 94),       # 0x22C55E
-    AgentState.NEEDS_HUMAN: (249, 115, 22),  # 0xF97316
-    AgentState.ERROR: (239, 68, 68),         # 0xEF4444
+    AgentState.IDLE: (128, 128, 128),        # 灰
+    AgentState.RUNNING: (60, 200, 90),       # 绿
+    AgentState.NEEDS_HUMAN: (255, 150, 20),  # 橙
+    AgentState.ERROR: (220, 60, 60),         # 红
 }
 
 #: 每种状态的中文名（托盘提示、右键菜单用）。
@@ -115,13 +109,13 @@ STATE_LABELS: Dict[str, str] = {
 #: 每种状态的动画参数 ``(是否闪烁, 周期秒)``。
 #:
 #: - **IDLE 不闪** —— 常亮灰，安静待着
-#: - **RUNNING 慢呼吸**（0.8s）—— 表示"在动"，但不打扰
-#: - **NEEDS_HUMAN 快闪**（0.4s）—— **这是唯一需要抢注意力的状态**
+#: - **RUNNING 慢脉冲**（1.6s）—— 表示"在动"，但不打扰
+#: - **NEEDS_HUMAN 快闪**（0.5s）—— **这是唯一需要抢注意力的状态**
 #: - **ERROR 常亮红** —— 不闪，因为闪了反而像"正在处理"
 STATE_ANIMATION: Dict[str, Tuple[bool, float]] = {
     AgentState.IDLE: (False, 0.0),
-    AgentState.RUNNING: (True, 0.8),
-    AgentState.NEEDS_HUMAN: (True, 0.4),
+    AgentState.RUNNING: (True, 1.6),
+    AgentState.NEEDS_HUMAN: (True, 0.5),
     AgentState.ERROR: (False, 0.0),
 }
 
@@ -434,13 +428,13 @@ def selfcheck(quick: bool = True) -> dict:
 
     _add("★ IDLE **不闪**（安静待着）",
          STATE_ANIMATION[AgentState.IDLE][0] is False, "常亮")
-    _add("★ NEEDS_HUMAN 闪得**最快**（0.4s）",
-         STATE_ANIMATION[AgentState.NEEDS_HUMAN][1] == 0.4,
+    _add("★ NEEDS_HUMAN 闪得**最快**（0.5s）",
+         STATE_ANIMATION[AgentState.NEEDS_HUMAN][1] == 0.5,
          str(STATE_ANIMATION[AgentState.NEEDS_HUMAN]))
     _add("★ ERROR **不闪**（闪了像在忙）",
          STATE_ANIMATION[AgentState.ERROR][0] is False, "常亮")
-    _add("★ RUNNING 是慢呼吸（0.8s）",
-         STATE_ANIMATION[AgentState.RUNNING][1] == 0.8,
+    _add("★ RUNNING 是慢脉冲（1.6s）",
+         STATE_ANIMATION[AgentState.RUNNING][1] == 1.6,
          str(STATE_ANIMATION[AgentState.RUNNING]))
 
     # ============ 3) 合法转换 ============
