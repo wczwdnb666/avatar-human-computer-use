@@ -1316,16 +1316,35 @@ def _grab_client(window: int,
 
     返回 ``(shot, off_x, off_y)`` —— off 是 region 左上角在客户区的
     偏移，识别结果的坐标要加回去。抓不到抛 :class:`OcrUnavailable`。
+
+    ## ★ 为什么是 grab_window + 自己裁剪
+
+    这里曾经调 ``C.grab_client(window, region=...)`` —— 而
+    ``avatar.vision.capture`` **根本没有 grab_client**（它只有
+    ``grab_screen`` / ``grab_window`` / ``grab_monitor``）。
+
+    因为本机 WinRT 位图通路坏着、也没装 Tesseract，OCR 路径一直
+    走不到抓屏这一步，这个 AttributeError 就潜伏了很久。
+    **一旦 OCR 真正可用，它立刻炸。**
+
+    现在的做法：抓整个客户区（``client_only=True`` 排除标题栏），
+    再用 ``Bitmap.region()`` 按 region 裁。多一次内存拷贝，
+    但换来的是"只依赖真实存在的 API"。
+
+    ``region`` 是**客户区坐标** ``(left, top, right, bottom)``。
     """
     from ..vision import capture as C
-    if region:
-        shot = C.grab_client(window, region=region)
-        off_x, off_y = int(region[0]), int(region[1])
-    else:
-        shot = C.grab_client(window)
-        off_x = off_y = 0
+
+    shot = C.grab_window(window, client_only=True)
     if shot is None:
         raise OcrUnavailable("抓取窗口客户区失败（hwnd=0x%X）" % window)
+
+    if region:
+        l, t, r, b = (int(v) for v in region)
+        shot = shot.region(l, t, max(1, r - l), max(1, b - t))
+        off_x, off_y = l, t
+    else:
+        off_x = off_y = 0
     return shot, off_x, off_y
 
 

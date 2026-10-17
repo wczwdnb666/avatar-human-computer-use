@@ -223,3 +223,95 @@ class TestRealRecognition:
 
     def test_languages_non_empty(self):
         assert O.languages()
+
+
+class TestGrabClientContract:
+    """``_grab_client`` 的抓屏契约。
+
+    ## 守的是什么
+
+    ``_grab_client`` 曾经调 ``C.grab_client(window, region=...)`` ——
+    而 ``avatar.vision.capture`` **根本没有 grab_client**。
+    因为本机 OCR 路径一直走不到抓屏，这个 AttributeError 潜伏了很久。
+
+    这组测试把契约钉死：
+      1. 必须调 ``grab_window(hwnd, client_only=True)``
+      2. **不允许**调不存在的 ``grab_client``
+      3. region 裁剪与偏移换算正确
+    """
+
+    @staticmethod
+    def _fake_bitmap(w=200, h=150):
+        from avatar.vision.capture import Bitmap
+        return Bitmap(width=w, height=h, origin=(0, 0),
+                      pixels=bytearray([60, 60, 60, 255] * (w * h)))
+
+    def test_capture_has_no_grab_client(self):
+        """★ capture 模块**没有** grab_client —— 这是历史 bug 的根。
+
+        如果哪天有人真的加了 ``grab_client``，这条会红，
+        提醒他"先想清楚和 grab_window 的关系"，而不是悄悄多一个入口。
+        """
+        from avatar.vision import capture as C
+        assert not hasattr(C, "grab_client"), (
+            "capture 里出现了 grab_client —— 历史 bug 的根源。"
+            "若要新增，请同时更新 _grab_client 与这组契约测试。")
+
+    def test_grab_client_uses_grab_window_client_only(self):
+        """★ 必须调 ``grab_window(client_only=True)``，参数逐字段核对。"""
+        from unittest import mock
+        from avatar.vision import capture as C
+
+        calls = []
+
+        def fake_grab_window(hwnd, client_only=False, include_layered=True):
+            calls.append({"hwnd": hwnd, "client_only": client_only})
+            return self._fake_bitmap()
+
+        with mock.patch.object(C, "grab_window", fake_grab_window):
+            shot, ox, oy = O._grab_client(0x1234, (10, 20, 60, 80))
+
+        assert calls == [{"hwnd": 0x1234, "client_only": True}], \
+            "grab_window 的调用参数不对：%r" % (calls,)
+        assert (ox, oy) == (10, 20), "region 偏移应为 (10,20)，实际 %r" % ((ox, oy),)
+        assert (shot.width, shot.height) == (50, 60), \
+            "裁剪尺寸应为 50x60，实际 %dx%d" % (shot.width, shot.height)
+
+    def test_grab_client_without_region(self):
+        """不给 region：返回整张客户区图，偏移为 (0, 0)。"""
+        from unittest import mock
+        from avatar.vision import capture as C
+
+        calls = []
+
+        def fake_grab_window(hwnd, client_only=False, include_layered=True):
+            calls.append(client_only)
+            return self._fake_bitmap(300, 200)
+
+        with mock.patch.object(C, "grab_window", fake_grab_window):
+            shot, ox, oy = O._grab_client(42, None)
+
+        assert calls == [True]
+        assert (ox, oy) == (0, 0)
+        assert (shot.width, shot.height) == (300, 200)
+
+    def test_grab_client_none_shot_raises(self):
+        """抓不到图必须抛 OcrUnavailable，不能返回 None 让上层去崩。"""
+        from unittest import mock
+        from avatar.vision import capture as C
+
+        with mock.patch.object(C, "grab_window", lambda *a, **k: None):
+            with pytest.raises(O.OcrUnavailable):
+                O._grab_client(7, None)
+
+    def test_grab_client_region_clamped(self):
+        """region 超出图范围时被 clamp，不越界、不抛。"""
+        from unittest import mock
+        from avatar.vision import capture as C
+
+        with mock.patch.object(C, "grab_window",
+                               lambda *a, **k: self._fake_bitmap(50, 50)):
+            shot, ox, oy = O._grab_client(1, (40, 40, 999, 999))
+
+        assert shot.width <= 50 and shot.height <= 50
+        assert (ox, oy) == (40, 40)
