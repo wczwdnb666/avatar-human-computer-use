@@ -655,7 +655,12 @@ def relative_point(client_size: Tuple[int, int],
 # 四、真人化输入
 # ==========================================================================
 def human_click(hwnd: int, cx: int, cy: int, *, why: str = "") -> None:
-    """真人化点击一个**客户区**坐标。"""
+    """真人化点击一个**客户区**坐标。
+
+    ★ SendInput 偶发"错误 5 拒绝访问"是**瞬时**的（实测：前台切换
+      的一瞬间 UIPI 会拒一次，下一毫秒就恢复）—— 所以重试 2 次，
+      而不是把整个流程打崩。
+    """
     # ★ 点击前必须确认前台是 QQ —— 点错窗口比点不准更糟
     if not _foreground_is(hwnd):
         focus_qq(hwnd)
@@ -663,7 +668,19 @@ def human_click(hwnd: int, cx: int, cy: int, *, why: str = "") -> None:
     log("执行", "点击%s → 屏幕 (%d, %d)" % (("（" + why + "）") if why else "",
                                             sx, sy))
     # ★ click_human 内部：贝塞尔轨迹 → 反应延迟 → 按下 → 按住 → 抬起
-    HM.click_human(sx, sy, human=True, precision=1.2)
+    from avatar.errors import ActionFailed
+    for attempt in range(3):
+        try:
+            HM.click_human(sx, sy, human=True, precision=1.2)
+            break
+        except ActionFailed as exc:
+            if attempt == 2:
+                raise
+            log("执行", "⚠ 点击被系统拒了一次（%s），0.8s 后重试" %
+                str(exc).split("（")[0][:40])
+            time.sleep(0.8)
+            if not _foreground_is(hwnd):
+                focus_qq(hwnd)
     time.sleep(0.25)
 
 
@@ -837,33 +854,36 @@ def run(friend: str, message: str, *, send: bool,
         log("执行", "确认无误后加 --yes 真发")
         return 0
 
-    # ---- 3) 搜索好友 ----
+    # ---- 3) 搜索好友 / 群 ----
     banner("③ 搜索好友")
     human_click(win.hwnd, *pt, why="搜索框")
     human_type(friend, win.hwnd)
-    log("执行", "回车确认搜索")
+    # ★ 这一次回车身兼两职：确认搜索 + 打开"最佳匹配"。
+    #   好友名、群名行为一致 —— 群名精确命中时直接打开群会话，
+    #   所以 --friend 对群名是透明的，不需要单独的群聊分支。
+    log("执行", "回车：确认搜索并打开最佳匹配（好友名 / 群名通用）")
     from avatar.input import keyboard as K
     K.press("enter")
-    time.sleep(1.6)          # 等搜索结果列表刷新
+    time.sleep(1.6)          # 等会话面板加载
 
-    # ---- 4) 点第一个搜索结果 ----
-    banner("④ 打开会话")
-    # ★ 这里也用相对坐标：搜索结果的第一个条目在列表顶部往下一点。
-    #   为什么不五层链？因为"第一个结果"没有稳定的文字特征 ——
-    #   它取决于你搜谁，模板匹配和 OCR 都没法给出通用答案。
-    res_pt = relative_point((w, h), 0.30, 0.16)
-    log("定位", "第一个搜索结果 → 客户区 %s（相对坐标，无通用文字特征）"
-        % (res_pt,))
-    human_click(win.hwnd, *res_pt, why="搜索结果")
-    time.sleep(1.2)
-
-    # ---- 5) 点输入框、打字 ----
-    banner("⑤ 输入消息")
-    # ★ 自动校准输入框：右下角候选区里找最大的扁长色块。
-    #   原来写死 (0.52, 0.88)，窗口一改布局就点空。
+    # ---- 4) 定位输入框（校准成功 = 会话已打开）----
+    banner("④ 定位输入框")
+    # ★ 为什么回车后**不再点"列表第一项"**（老版本的行为）：
+    #   回车后搜索面板关闭、左栏恢复成**会话列表**，这时去点
+    #   (0.30, 0.16)，点到的是"会话列表第一项"而不是"搜索结果
+    #   第一项" —— 万一它不是刚打开的会话，消息就发错人了。
+    #   改用输入框校准当"会话已打开"的探针；探测不到才兜底去点。
     input_pt = calibrate_input_box(
         win.hwnd, (w, h),
         save_path=os.path.join(tempfile.gettempdir(), "qq_input_auto.png"))
+    if input_pt is None:
+        # 兜底：会话可能没被回车打开（比如搜索结果太模糊）→
+        # 按老办法点列表第一项，再校准一次
+        log("打开", "回车后没探测到输入框 → 兜底点列表第一项")
+        res_pt = relative_point((w, h), 0.30, 0.16)
+        human_click(win.hwnd, *res_pt, why="列表第一项")
+        time.sleep(1.2)
+        input_pt = calibrate_input_box(win.hwnd, (w, h))
     if input_pt is None:
         input_pt = relative_point((w, h), 0.52, 0.88)
         log("校准", "⚠⚠ 输入框自动校准失败 → 回退固定坐标 (0.52, 0.88)")
@@ -880,8 +900,8 @@ def run(friend: str, message: str, *, send: bool,
 
     human_type(message, win.hwnd)
 
-    # ---- 6) 发送 + 验证 ----
-    banner("⑥ 发送并验证")
+    # ---- 5) 发送 + 验证 ----
+    banner("⑤ 发送并验证")
     log("执行", "回车发送")
     K.press("enter")
     ok = verify_sent(win.hwnd, (w, h), before)
@@ -894,13 +914,139 @@ def run(friend: str, message: str, *, send: bool,
     return 1
 
 
+# ==========================================================================
+# 六、读取消息（--read）—— 纯 ctypes，零第三方依赖
+# ==========================================================================
+def get_clipboard_text(retries: int = 5) -> str:
+    """读剪贴板里的文本（CF_UNICODETEXT）。**纯 ctypes，零依赖**。
+
+    ## ★ 64 位 Python 的坑（不写清楚必有人踩）
+
+    ``ctypes.windll`` 导出的函数默认 ``restype`` 是 32 位 ``c_int``，
+    而 ``GetClipboardData`` / ``GlobalLock`` 返回的是 **64 位指针** ——
+    不显式设 ``restype`` 的话高 32 位被静默截断，``wstring_at`` 一解引用
+    就访问违例崩溃。这不是理论风险，64 位 Python 上 100% 必踩，
+    所以签名必须先钉死再用。
+
+    ## 生命周期规则
+
+    ``OpenClipboard → GetClipboardData → GlobalLock → 用数据 →
+    GlobalUnlock → CloseClipboard`` 是一条**锁链**：剪贴板打开期间
+    其他进程拿不到，所以"用数据"必须尽量短，且 finally 保证 Close。
+    """
+    import ctypes
+
+    CF_UNICODETEXT = 13
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+
+    # ---- 钉死 64 位签名 ----
+    user32.OpenClipboard.argtypes = [ctypes.c_void_p]       # 窗口句柄可空
+    user32.GetClipboardData.argtypes = [ctypes.c_uint]
+    user32.GetClipboardData.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+
+    # 剪贴板可能被别的进程短暂占用（比如 QQ 正往里写），重试几次
+    for _ in range(retries):
+        if user32.OpenClipboard(None):
+            break
+        time.sleep(0.12)
+    else:
+        log("读取", "⚠ 剪贴板打不开（连续 %d 次被占用）" % retries)
+        return ""
+    try:
+        h = user32.GetClipboardData(CF_UNICODETEXT)
+        if not h:
+            return ""            # 剪贴板里是图片/文件等非文本内容
+        ptr = kernel32.GlobalLock(h)
+        if not ptr:
+            return ""
+        try:
+            return ctypes.wstring_at(ptr)
+        finally:
+            kernel32.GlobalUnlock(h)
+    finally:
+        user32.CloseClipboard()
+
+
+def _hotkey_with_retry(keys, *, hwnd: int = 0, desc: str = "") -> None:
+    """组合键 + 瞬时失败重试（理由同 human_click 的注释）。"""
+    from avatar.errors import ActionFailed
+    from avatar.input import keyboard as K
+    for attempt in range(3):
+        try:
+            K.hotkey(keys)
+            return
+        except ActionFailed:
+            if attempt == 2:
+                raise
+            log("执行", "⚠ %s 被系统拒了一次，0.8s 后重试"
+                % (desc or "+".join(keys)))
+            time.sleep(0.8)
+            if hwnd and not _foreground_is(hwnd):
+                focus_qq(hwnd)
+
+
+def run_read(win, w: int, h: int) -> int:
+    """读取**当前打开会话**的可见聊天记录并打印。
+
+    ## 用法前提
+
+    先在 QQ 里**手动打开**要读的会话（Demo 不替你选会话 ——
+    读错会话和发错消息一样是事故）。
+
+    ## 原理
+
+    点聊天区中间聚焦消息面板 → Ctrl+A 全选消息 → Ctrl+C 复制 →
+    读剪贴板。``Ctrl+A/C`` 走项目自带的 ``avatar.input.keyboard``
+    （SendInput 物理路径），QQ 客户端无感知差异。
+    """
+    banner("READ 读取当前会话")
+    log("读取", "目标：当前手动打开的会话（Demo 不替你选会话）")
+
+    if not focus_qq(win.hwnd):
+        log("窗口", "⚠⚠ 前台不是 QQ —— Ctrl+A/C 会落到别的应用上！")
+
+    # 1) 点聊天区中间，把键盘焦点交给消息面板
+    pt = relative_point((w, h), 0.75, 0.50)
+    human_click(win.hwnd, *pt, why="聊天区域（聚焦消息面板）")
+    time.sleep(0.6)
+
+    # 2) 全选 + 复制
+    log("执行", "Ctrl+A 全选消息")
+    _hotkey_with_retry(["ctrl", "a"], hwnd=win.hwnd, desc="Ctrl+A")
+    time.sleep(0.5)
+    log("执行", "Ctrl+C 复制")
+    _hotkey_with_retry(["ctrl", "c"], hwnd=win.hwnd, desc="Ctrl+C")
+    time.sleep(0.8)          # 给 QQ 时间把文本写进剪贴板
+
+    # 3) 读剪贴板 + 收尾
+    text = get_clipboard_text()
+    from avatar.input import keyboard as K
+    K.press("esc")           # 取消全选高亮，礼貌恢复界面
+    banner("读取结果")
+    if not text:
+        log("读取", "⚠ 剪贴板里没有文本 —— 会话没打开？或焦点不在消息区？")
+        return 1
+    print(text)
+    print()
+    log("读取", "✓ 共 %d 字符" % len(text))
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         description="Avatar × QQ 自动化 Showcase（五层降级链 + 真人熵）")
     ap.add_argument("--friend", default="文件传输助手",
-                    help="要搜索的好友名（默认：文件传输助手，发错也只是发给自己）")
+                    help="要搜索的好友名或群名（默认：文件传输助手，"
+                         "发错也只是发给自己；群名精确命中时直接打开群会话）")
     ap.add_argument("--message", default=DEFAULT_MESSAGE,
                     help="消息内容（默认：%s）" % DEFAULT_MESSAGE)
+    ap.add_argument("--read", action="store_true",
+                    help="读取当前打开会话的聊天记录并打印"
+                         "（先在 QQ 里手动打开要读的会话）")
     ap.add_argument("--yes", action="store_true",
                     help="确认发送。不加这个参数只做 dry-run")
     ap.add_argument("--no-launch", action="store_true",
@@ -910,6 +1056,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     a = ap.parse_args(argv)
 
     try:
+        # ---- --read 模式：只读不写，不走搜索/发送流程 ----
+        if a.read:
+            banner("Avatar × QQ 自动化 Showcase —— READ 模式")
+            win = ensure_qq_window(auto_launch=not a.no_launch)
+            if not win:
+                log("窗口", "失败：找不到 QQ。请先手动打开并登录 QQ。")
+                return 2
+            w, h = (win.client_size if win.client_size[0] > 0
+                    else (win.rect[2], win.rect[3]))
+            return run_read(win, w, h)
+
         return run(a.friend, a.message, send=bool(a.yes),
                    auto_launch=not a.no_launch,
                    template_search=a.template_search)
