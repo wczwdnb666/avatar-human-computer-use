@@ -160,6 +160,8 @@ MODULE_SELFCHECKS = [
     # mcp 是最上层（它把全部能力暴露给外部客户端）。
     ("多模态", "avatar._win32.winrt"),
     ("多模态", "avatar.uia.ocr_fallback"),
+    # Tesseract 旁路紧跟其后 —— 它是 ocr_fallback 挂了之后的退路
+    ("多模态", "avatar.uia.ocr_tesseract"),
     ("多模态", "avatar.uia.vision_fallback"),
     ("多模态", "avatar.vision.chain"),
     ("多模态", "avatar.agentic_planner.llm_backend"),
@@ -1606,29 +1608,50 @@ def check_phase7_hard_constraints():
     except Exception as exc:      # noqa: BLE001
         item("WinRT 地基", False, str(exc))
 
-    # --- 2) OCR 可用性 ---
+    # --- 2) OCR 可用性（三态判定）---
+    # ⚠ 不要因为 Windows OCR 挂了就红 —— 那是**已知的 WinRT 深水区**
+    #   （SoftwareBitmap.CreateCopyFromBuffer 恒返回 E_INVALIDARG），
+    #   模块内置了 Tesseract 旁路（subprocess 调外部 tesseract.exe）。
+    #   三态：
+    #     · Windows 原生可用            → [OK]
+    #     · 原生不通但 Tesseract 可用   → [OK]（注明降级）
+    #     · 两个都不可用                → [SKIP] 附原因（不红）
     try:
-        avail = OCR.is_available()
+        from avatar.uia import ocr_tesseract as OT
+        win_ok = OCR.winrt_available()
+        tess_ok = OT.is_available()
         reason = OCR.unavailable_reason()
-        item("OCR 可用性有明确结论", avail or bool(reason),
-             "可用" if avail else reason.splitlines()[0][:70], soft=not avail)
-        if avail:
-            langs = OCR.languages()
-            item("OCR 语言列表", bool(langs),
-                 " / ".join(l.get("tag", "?") for l in langs[:3]))
+
+        if win_ok:
+            _langs = [l.get("tag", "?") for l in OCR.languages()[:3]]
+            item("OCR 可用（Windows 原生）", True,
+                 "windows.media.ocr（语言：%s）" % " / ".join(_langs)
+                 if _langs else "windows.media.ocr")
+        elif tess_ok:
+            item("OCR 可用（降级到 Tesseract）", True,
+                 "Windows 位图通路不通 → Tesseract 接管：%s"
+                 % OT.version())
         else:
+            item("OCR 可用性（两个引擎都不可用）", False,
+                 "[SKIP] %s" % (reason.splitlines()[0][:70]
+                                if reason else "(无原因)"),
+                 soft=True)
             exp = OCR.explain_unavailable()
             item("★ OCR 不可用时给可操作诊断",
                  len(exp) > 40 and any(k in exp for k in
                                        ("包标识", "语言包", "位图通路",
-                                        "引擎能否创建")),
-                 exp.splitlines()[3][:60] if len(exp.splitlines()) > 3 else "")
+                                        "引擎能否创建", "Tesseract")),
+                 "两边都报了" if "Tesseract" in exp else "只有 WinRT 诊断")
             item("★ 诊断建议了替代引擎（set_engine）",
                  "set_engine" in exp, "有出路")
+
         item("OCR 位图通路自测可调",
              isinstance(OCR.probe_bitmap_path(), str),
-             "通" if not OCR.probe_bitmap_path() else
-             OCR.probe_bitmap_path()[:50])
+             "通" if win_ok
+             else "WinRT 不通（已知问题，Tesseract 是旁路）")
+        item("OCR 引擎模式可切换",
+             OCR.engine_mode() in ("auto", "windows", "tesseract"),
+             OCR.engine_mode())
     except Exception as exc:      # noqa: BLE001
         item("OCR 可用性", False, str(exc))
 

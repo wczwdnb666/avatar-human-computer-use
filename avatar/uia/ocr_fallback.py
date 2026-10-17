@@ -37,9 +37,24 @@ HRESULT 是成功的，但引擎是空的。
 
 - :func:`is_available` **真的去探测**，不假设
 - :func:`explain_unavailable` 会**明确说出**是哪一类原因
-- :func:`set_engine` 允许注入替代引擎（Tesseract / PaddleOCR / 云 OCR）
+- :func:`set_engine` 支持三种内置引擎选择（``"windows"`` / ``"tesseract"``
+  / ``"auto"``），也允许注入自定义函数（PaddleOCR / 云 OCR）
 
 **降级链的正确态度是"这一层不可用就往下走"，不是"想办法绕过系统限制"。**
+
+## ✅ 旁路：内置 Tesseract 引擎（2026-10-16）
+
+上面那条死路（位图通路不通）有了绕法：``uia/ocr_tesseract.py``
+用 subprocess 调外部 ``tesseract.exe`` —— 不碰 WinRT，把位图存成
+临时 BMP 文件，解析 TSV 输出。
+
+默认 ``set_engine("auto")``：WinRT 不可用时**自动降级**到 Tesseract，
+调用方无感。Tesseract 是**可选依赖** —— 没装只是这条旁路不通，
+UIA 通道完全不受影响。
+
+    O.set_engine("auto")        # 默认：WinRT 优先，挂了自动走 Tesseract
+    O.set_engine("windows")     # 只用 WinRT（诊断 WinRT 用）
+    O.set_engine("tesseract")   # 强制 Tesseract（WinRT 能跑也绕开它）
 
 ## ⚠ 已知问题（2026-10-07 实测）
 
@@ -68,7 +83,8 @@ HRESULT 是成功的，但引擎是空的。
 
 **做**：探测 OCR 可用性并给出**具体**原因；列出已安装的识别语言；
 把 GDI 位图转成 WinRT 位图；识别整图或指定区域；
-按文本查找（支持模糊）；把结果换算成客户区坐标。
+按文本查找（支持模糊）；把结果换算成客户区坐标；
+**按引擎模式路由**（WinRT / Tesseract / 自定义，见 :func:`set_engine`）。
 
 **不做**：
 
@@ -106,8 +122,11 @@ __all__ = [
     "OcrWord",
     "OcrHit",
     "set_engine",
+    "engine_mode",
     "engine_name",
     "is_available",
+    "winrt_available",
+    "tesseract_available",
     "unavailable_reason",
     "explain_unavailable",
     "probe_bitmap_path",
@@ -252,7 +271,7 @@ class OcrHit:
 
 
 # --------------------------------------------------------------------------
-# 引擎注册
+# 引擎注册与路由
 # --------------------------------------------------------------------------
 #: 真实识别函数的注册位。约定签名::
 #:
@@ -263,35 +282,111 @@ class OcrHit:
 _ENGINE: Optional[Callable] = None
 _ENGINE_NAME = ""
 
+#: 引擎模式：``"auto"``（WinRT 优先，挂了降级 Tesseract）/
+#: ``"windows"``（只用 WinRT）/ ``"tesseract"``（强制 Tesseract）/
+#: ``"custom"``（注入的可调用对象）。
+_ENGINE_MODE = "auto"
+
 #: 探测结果的缓存。``None`` = 还没探测过。
 _PROBE: Dict[str, Any] = {"done": False, "ok": False, "reason": "",
                           "engine": "", "langs": []}
 _PROBE_LOCK = threading.Lock()
 
 
-def set_engine(fn: Optional[Callable], name: str = "") -> None:
-    """注册 OCR 实现。传 ``None`` 可注销（回到 WinRT 默认）。
+def set_engine(fn, name: str = "") -> None:
+    """选择或注册 OCR 引擎。
+
+    ## 三种用法
+
+    1. **字符串选内置引擎**（推荐）::
+
+           set_engine("auto")        # WinRT 优先，不可用自动降级 Tesseract
+           set_engine("windows")     # 只用 Windows.Media.Ocr
+           set_engine("tesseract")   # 强制走 Tesseract（旁路）
+
+    2. **注入自定义函数**（旧协议，测试与第三方引擎用）::
+
+           def my_engine(window, region, min_conf, lang) -> [OcrHit]: ...
+           set_engine(my_engine, "paddleocr")
+
+    3. ``set_engine(None)`` —— 回到默认的 auto。
 
     ## 为什么要这个口子
 
-    因为 Windows.Media.Ocr 在很多环境里用不了（缺包标识、缺语言包），
-    而"OCR 不可用"不该让整个降级链失效 —— 换成 Tesseract 就行。
+    因为 Windows.Media.Ocr 在很多环境里用不了（位图通路不通、
+    缺包标识、缺语言包），而"OCR 不可用"不该让整个降级链失效。
 
     这也是**测试隔离**的手段：塞一个假引擎就能测上层逻辑，
     不必依赖真机上有 OCR。
     """
-    global _ENGINE, _ENGINE_NAME
-    _ENGINE = fn
-    _ENGINE_NAME = str(name or ("custom" if fn else ""))
+    global _ENGINE, _ENGINE_NAME, _ENGINE_MODE
+
+    if callable(fn):
+        _ENGINE = fn
+        _ENGINE_NAME = str(name or "custom")
+        _ENGINE_MODE = "custom"
+    elif isinstance(fn, str):
+        mode = fn.strip().lower()
+        if mode in ("auto",):
+            _ENGINE, _ENGINE_NAME, _ENGINE_MODE = None, "", "auto"
+        elif mode in ("windows", "winrt", "native"):
+            _ENGINE, _ENGINE_NAME, _ENGINE_MODE = None, "", "windows"
+        elif mode in ("tesseract",):
+            _ENGINE, _ENGINE_NAME, _ENGINE_MODE = None, "", "tesseract"
+        else:
+            raise ValueError(
+                "set_engine 的名字只能是 'auto' / 'windows' / 'tesseract'，"
+                "或传一个可调用对象，收到：%r" % fn)
+    elif fn is None:
+        _ENGINE, _ENGINE_NAME, _ENGINE_MODE = None, "", "auto"
+    else:
+        raise ValueError(
+            "set_engine 只接受字符串（引擎名）或可调用对象，收到：%r"
+            % type(fn).__name__)
+
     with _PROBE_LOCK:
         _PROBE["done"] = False
 
 
+def engine_mode() -> str:
+    """当前引擎模式：``auto`` / ``windows`` / ``tesseract`` / ``custom``。"""
+    return _ENGINE_MODE
+
+
+def _tesseract_mod():
+    """拿 Tesseract 引擎模块。**延迟 import** —— 它顶部 import 了本模块，
+    顶部反向 import 会成环。"""
+    from . import ocr_tesseract as OT
+    return OT
+
+
+def winrt_available() -> bool:
+    """只查 Windows 原生 OCR（不走 Tesseract 降级）。"""
+    return bool(_probe()["ok"])
+
+
+def tesseract_available() -> bool:
+    """只查 Tesseract 旁路。"""
+    try:
+        return _tesseract_mod().is_available()
+    except Exception:      # noqa: BLE001
+        return False
+
+
 def engine_name() -> str:
-    """当前生效的引擎名。"""
+    """当前**实际生效**的引擎名（不是模式名）。"""
     if _ENGINE is not None:
         return _ENGINE_NAME or "custom"
-    return "windows.media.ocr" if _PROBE.get("ok") else ""
+    if _ENGINE_MODE == "windows":
+        return "windows.media.ocr" if winrt_available() else ""
+    if _ENGINE_MODE == "tesseract":
+        return "tesseract" if tesseract_available() else ""
+    # auto：报告真正会用的那个
+    if winrt_available():
+        return "windows.media.ocr"
+    if tesseract_available():
+        return "tesseract"
+    return ""
 
 
 # --------------------------------------------------------------------------
@@ -794,18 +889,52 @@ def _probe(force: bool = False) -> Dict[str, Any]:
 def is_available() -> bool:
     """OCR 现在能用吗？**真的去探测，不假设。**
 
-    有自定义引擎时直接返回 True（那个引擎自己负责可用性）。
+    按当前引擎模式回答：
+
+    - ``custom`` —— 注入了自定义引擎，直接 True（那个引擎自己负责可用性）
+    - ``windows`` —— 只问 WinRT
+    - ``tesseract`` —— 只问 Tesseract
+    - ``auto``（默认）—— 两个里**有一个**能用就是 True
+
+    ⚠ auto 档的识别入口会先调本函数再分派引擎 —— 这是**故意的**：
+    阶段五的自检靠 monkeypatch 本函数模拟"引擎不可用"，
+    入口必须尊重这个 patch，否则那个测试会在能跑 WinRT 的机器上假红。
     """
     if _ENGINE is not None:
         return True
-    return bool(_probe()["ok"])
+    if _ENGINE_MODE == "windows":
+        return winrt_available()
+    if _ENGINE_MODE == "tesseract":
+        return tesseract_available()
+    return winrt_available() or tesseract_available()
 
 
 def unavailable_reason() -> str:
-    """不可用的原因（一句话）。可用时返回空串。"""
+    """不可用的原因（一句话）。可用时返回空串。
+
+    auto 档且**两个引擎都不可用**时，组合两边的诊断 ——
+    只报一边会让人以为另一边也没试。
+    """
     if _ENGINE is not None:
         return ""
-    return str(_probe()["reason"] or "")
+    if _ENGINE_MODE == "windows":
+        return str(_probe()["reason"] or "")
+    if _ENGINE_MODE == "tesseract":
+        try:
+            return str(_tesseract_mod().unavailable_reason() or "")
+        except Exception:      # noqa: BLE001
+            return "Tesseract 探测失败"
+    # auto
+    w_reason = str(_probe()["reason"] or "")
+    t_reason = ""
+    try:
+        t_reason = str(_tesseract_mod().unavailable_reason() or "")
+    except Exception:      # noqa: BLE001
+        pass
+    if w_reason and t_reason:
+        return "Windows OCR：%s ｜ Tesseract：%s" % (
+            w_reason.splitlines()[0][:80], t_reason)
+    return w_reason or t_reason
 
 
 def explain_unavailable() -> str:
@@ -816,9 +945,74 @@ def explain_unavailable() -> str:
     """
     if _ENGINE is not None:
         return "当前用的是自定义引擎「%s」，不涉及 WinRT OCR。" % _ENGINE_NAME
-    if _probe()["ok"]:
-        return "WinRT OCR 可用。"
 
+    tess_ok = tesseract_available()
+
+    # 强制 tesseract 模式：只诊断 tesseract
+    if _ENGINE_MODE == "tesseract":
+        if tess_ok:
+            try:
+                return "Tesseract 可用（%s）。" % _tesseract_mod().version()
+            except Exception:      # noqa: BLE001
+                return "Tesseract 可用。"
+        return _tesseract_diagnosis()
+
+    # 强制 windows 模式：只诊断 WinRT
+    if _ENGINE_MODE == "windows":
+        if winrt_available():
+            return "Windows 原生 OCR 可用。"
+        return _winrt_diagnosis()
+
+    # auto
+    if winrt_available():
+        return "Windows 原生 OCR 可用（auto 模式当前走它）。"
+    if tess_ok:
+        try:
+            return ("Windows 原生 OCR 不可用，但 auto 模式已降级到 "
+                    "Tesseract（%s）。" % _tesseract_mod().version())
+        except Exception:      # noqa: BLE001
+            return ("Windows 原生 OCR 不可用，但 auto 模式已降级到 "
+                    "Tesseract。")
+    # 两个都不可用：两边都报
+    return _winrt_diagnosis() + "\n\n" + _tesseract_diagnosis()
+
+
+def _tesseract_diagnosis() -> str:
+    """Tesseract 旁路的诊断。**永不抛**。"""
+    try:
+        OT = _tesseract_mod()
+        env = OT.describe_environment()
+    except Exception as exc:      # noqa: BLE001
+        return "Tesseract 模块加载或探测失败：%s" % exc
+
+    lines = ["Tesseract 旁路：%s"
+             % ("可用" if env.get("available") else "不可用"), ""]
+    if env.get("available"):
+        lines.append("  exe    : %s" % env.get("exe", ""))
+        lines.append("  版本   : %s" % env.get("version", ""))
+        langs = env.get("languages") or []
+        lines.append("  语言包 : %s"
+                     % (" / ".join(langs) if langs else "(没探到)"))
+        if langs and "chi_sim" not in langs:
+            lines.append("  ⚠ 没有 chi_sim —— 中文识别会失败。")
+            lines.append("    下 chi_sim.traineddata 放进 tessdata 目录：")
+            lines.append("    https://github.com/tesseract-ocr/tessdata_fast")
+    else:
+        lines.append("  原因   : %s" % env.get("reason", "(未说明)"))
+        lines.append("")
+        lines.append("  安装（二选一）：")
+        lines.append("    a) 官方安装包（UB-Mannheim 维护，推荐）：")
+        lines.append("       https://github.com/UB-Mannheim/tesseract/wiki")
+        lines.append("       装完把安装目录加进 PATH"
+                     "（默认 " + r"C:\Program Files\Tesseract-OCR" + "）")
+        lines.append("    b) winget：winget install UB-Mannheim.TesseractOCR")
+        lines.append("  中文语言包（chi_sim.traineddata）：")
+        lines.append("    https://github.com/tesseract-ocr/tessdata_fast")
+    return "\n".join(lines)
+
+
+def _winrt_diagnosis() -> str:
+    """WinRT OCR 的逐项排查（原 explain_unavailable 的走查体）。"""
     lines = ["OCR 不可用。逐项排查：", ""]
 
     # 1) 库层
@@ -866,10 +1060,10 @@ def explain_unavailable() -> str:
                 "   SoftwareBitmap 创建环节（ABI 层）。",
                 "",
                 "   可操作的做法：",
-                "     a) 换一个 OCR 引擎（推荐）：",
+                "     a) 本模块**内置** Tesseract 旁路（推荐，零代码）：",
+                "        # 装了 Tesseract 后 auto 模式自动降级；或强制：",
                 "        from avatar.uia import ocr_fallback as O",
-                "        O.set_engine(my_fn, 'tesseract')",
-                "        # my_fn(window, region, min_conf, lang) -> [OcrHit]",
+                "        O.set_engine('tesseract')",
                 "     b) 依赖 UIA 通道（不走 OCR）",
                 "     c) 用视觉模板匹配（uia/vision_fallback）",
             ]
@@ -890,8 +1084,8 @@ def explain_unavailable() -> str:
         lines.append("   → **最可能的原因：本进程没有包标识（MSIX 打包）**")
         lines.append("     Windows.Media.Ocr 要求打包应用才能用。")
         lines.append("     可选做法：")
-        lines.append("       a) 用 Tesseract 等替代引擎：")
-        lines.append("          ocr_fallback.set_engine(my_engine, 'tesseract')")
+        lines.append("       a) 本模块**内置** Tesseract 旁路（装了 Tesseract 后")
+        lines.append("          auto 模式自动降级，或 O.set_engine('tesseract')）")
         lines.append("       b) 把本工具打成 MSIX（改动大）")
         lines.append("       c) 依赖 UIA 通道（不走 OCR）")
         lines.append("   原始错误：%s" % exc)
@@ -959,12 +1153,28 @@ def _display_name(tag: str) -> str:
 def languages() -> List[Dict[str, str]]:
     """已安装的 OCR 语言列表。**不可用时返回空列表（不抛）。**
 
-    返回 ``[{"tag": "zh-Hans-CN", "display": "中文"}, ...]``。
+    按引擎模式返回对应引擎的语言：
+
+    - WinRT —— ``[{"tag": "zh-Hans-CN", "display": "中文"}, ...]``
+    - Tesseract —— ``[{"tag": "chi_sim", "display": "chi_sim"}, ...]``
     """
+    if _ENGINE is not None:
+        return []
     try:
-        if not is_available():
-            return []
-        return _list_languages()
+        if _ENGINE_MODE == "tesseract":
+            return [{"tag": t, "display": t}
+                    for t in _tesseract_mod().languages()]
+        if _ENGINE_MODE == "windows":
+            if not winrt_available():
+                return []
+            return _list_languages()
+        # auto：优先 native，降级则 tesseract
+        if winrt_available():
+            return _list_languages()
+        if tesseract_available():
+            return [{"tag": t, "display": t}
+                    for t in _tesseract_mod().languages()]
+        return []
     except Exception:      # noqa: BLE001
         return []
 
@@ -991,6 +1201,14 @@ def recognize(bitmap: Any, *,
 
     抛 :class:`OcrUnavailable`，消息里带**具体原因**。
     上层捕获它沿降级链往下走。
+
+    ## 引擎路由
+
+    - ``tesseract`` 模式 —— 走 :mod:`avatar.uia.ocr_tesseract`
+    - ``windows`` 模式 —— 只走 WinRT，不可用就抛
+    - ``auto``（默认）—— 先问 :func:`is_available`（这一步尊重外部
+      monkeypatch，阶段五自检靠它模拟"引擎不可用"），再分派：
+      WinRT 可用走 WinRT，否则走 Tesseract
     """
     if _ENGINE is not None:
         # 自定义引擎走 OcrHit 协议，这里转成 OcrWord
@@ -1005,12 +1223,47 @@ def recognize(bitmap: Any, *,
                 engine=h.engine or _ENGINE_NAME))
         return out
 
+    if _ENGINE_MODE == "tesseract":
+        return _tesseract_recognize(bitmap, region=region,
+                                    language=language, timeout=timeout)
+
+    if _ENGINE_MODE == "windows":
+        if not winrt_available():
+            raise OcrUnavailable(unavailable_reason() or "OCR 不可用",
+                                 hint=explain_unavailable())
+        return _winrt_recognize(bitmap, language=language, timeout=timeout,
+                                region=region)
+
+    # auto
     if not is_available():
+        raise OcrUnavailable(unavailable_reason() or "OCR 不可用",
+                             hint=explain_unavailable())
+    if winrt_available():
+        return _winrt_recognize(bitmap, language=language, timeout=timeout,
+                                region=region)
+    return _tesseract_recognize(bitmap, region=region,
+                                language=language, timeout=timeout)
+
+
+def _tesseract_recognize(bitmap: Any, *,
+                         region: Optional[Tuple[int, int, int, int]] = None,
+                         language: str = "",
+                         timeout: float = DEFAULT_TIMEOUT) -> List[OcrWord]:
+    """走 Tesseract 旁路识别一张位图。坐标加回 region 原点，
+    与 WinRT 路径的口径一致（相对**传入的原图**）。"""
+    OT = _tesseract_mod()
+    if not OT.is_available():
         raise OcrUnavailable(
-            unavailable_reason() or "OCR 不可用",
-            hint=explain_unavailable())
-    return _winrt_recognize(bitmap, language=language, timeout=timeout,
-                            region=region)
+            OT.unavailable_reason() or "Tesseract 不可用",
+            hint=_tesseract_diagnosis())
+    words = OT.recognize(bitmap, region=region, language=language,
+                         timeout=timeout)
+    if region and (region[0] or region[1]):
+        off_x, off_y = int(region[0]), int(region[1])
+        for w in words:
+            l, t, r, b = w.rect
+            w.rect = (l + off_x, t + off_y, r + off_x, b + off_y)
+    return words
 
 
 def recognize_window(window: int, *,
@@ -1021,6 +1274,10 @@ def recognize_window(window: int, *,
     """抓窗口客户区 → 识别 → 换算成**客户区坐标**的 ``OcrHit`` 列表。
 
     ``region`` 是**客户区坐标**矩形，None 表示整窗。
+
+    ## 引擎路由
+
+    与 :func:`recognize` 同一套规则（tesseract / windows / auto）。
     """
     if not window:
         raise ValueError("recognize_window 必须传 window —— "
@@ -1030,26 +1287,51 @@ def recognize_window(window: int, *,
         return [h for h in (_ENGINE(window, region, 0.0, language) or [])
                 if isinstance(h, OcrHit)]
 
+    if _ENGINE_MODE == "tesseract":
+        return _tesseract_recognize_window(window, region=region,
+                                           language=language,
+                                           timeout=timeout)
+
+    if _ENGINE_MODE == "windows":
+        if not winrt_available():
+            raise OcrUnavailable(unavailable_reason() or "OCR 不可用",
+                                 hint=explain_unavailable())
+        return _winrt_recognize_window(window, region=region,
+                                       language=language, timeout=timeout)
+
+    # auto
     if not is_available():
         raise OcrUnavailable(unavailable_reason() or "OCR 不可用",
                              hint=explain_unavailable())
+    if winrt_available():
+        return _winrt_recognize_window(window, region=region,
+                                       language=language, timeout=timeout)
+    return _tesseract_recognize_window(window, region=region,
+                                       language=language, timeout=timeout)
 
+
+def _grab_client(window: int,
+                 region: Optional[Tuple[int, int, int, int]]):
+    """抓窗口客户区（region 给了就只抓那一块）。
+
+    返回 ``(shot, off_x, off_y)`` —— off 是 region 左上角在客户区的
+    偏移，识别结果的坐标要加回去。抓不到抛 :class:`OcrUnavailable`。
+    """
     from ..vision import capture as C
-    from ..app_manager import layout as L
-
-    # 抓客户区（region 给了就只抓那一块）
     if region:
         shot = C.grab_client(window, region=region)
         off_x, off_y = int(region[0]), int(region[1])
     else:
         shot = C.grab_client(window)
         off_x = off_y = 0
-
     if shot is None:
         raise OcrUnavailable("抓取窗口客户区失败（hwnd=0x%X）" % window)
+    return shot, off_x, off_y
 
-    words = _winrt_recognize(shot, language=language, timeout=timeout)
 
+def _words_to_hits(words: List[OcrWord], window: int,
+                   off_x: int, off_y: int) -> List[OcrHit]:
+    """``[OcrWord]``（相对图）→ ``[OcrHit]``（客户区坐标）。"""
     hits: List[OcrHit] = []
     for w in words:
         l, t, r, b = w.rect
@@ -1059,6 +1341,29 @@ def recognize_window(window: int, *,
             confidence=w.confidence, engine=w.engine,
             raw={"line": w.line}))
     return hits
+
+
+def _winrt_recognize_window(window: int, *,
+                            region: Optional[Tuple[int, int, int, int]] = None,
+                            language: str = "",
+                            timeout: float = DEFAULT_TIMEOUT
+                            ) -> List[OcrHit]:
+    """WinRT 路径的 recognize_window（原实现，抽出来供路由复用）。"""
+    shot, off_x, off_y = _grab_client(window, region)
+    words = _winrt_recognize(shot, language=language, timeout=timeout)
+    return _words_to_hits(words, window, off_x, off_y)
+
+
+def _tesseract_recognize_window(window: int, *,
+                                region: Optional[Tuple[int, int, int, int]] = None,
+                                language: str = "",
+                                timeout: float = DEFAULT_TIMEOUT
+                                ) -> List[OcrHit]:
+    """Tesseract 路径的 recognize_window。"""
+    shot, off_x, off_y = _grab_client(window, region)
+    words = _tesseract_recognize(shot, region=None, language=language,
+                                 timeout=timeout)
+    return _words_to_hits(words, window, off_x, off_y)
 
 
 # --------------------------------------------------------------------------
@@ -1175,24 +1480,42 @@ def _fold(s: str) -> str:
 # 环境描述
 # --------------------------------------------------------------------------
 def describe_environment() -> Dict[str, Any]:
-    """OCR 环境快照。**永不抛** —— 诊断函数不该因为诊断失败而失败。"""
+    """OCR 环境快照。**永不抛** —— 诊断函数不该因为诊断失败而失败。
+
+    快照里**两个引擎都探**：``winrt_available`` / ``tesseract`` 各一份，
+    外加当前生效的 ``engine`` 与 ``engine_mode``。诊断"为什么走了
+    旁路"要看两份，只看一份会漏。
+    """
     try:
-        probe = _probe()
-        return {
+        env: Dict[str, Any] = {
             "capability": CAPABILITY,
             "engine": engine_name(),
+            "engine_mode": _ENGINE_MODE,
             "custom_engine": _ENGINE is not None,
             "available": is_available(),
             "reason": unavailable_reason(),
             "languages": languages(),
             "winrt": W.ro_state(),
+            "winrt_available": winrt_available(),
             "backend": "windows.media.ocr (WinRT, ctypes)",
         }
+        try:
+            tess = _tesseract_mod().describe_environment()
+            env["tesseract"] = tess
+            env["tesseract_available"] = bool(tess.get("available"))
+        except Exception as exc:      # noqa: BLE001
+            env["tesseract"] = {"available": False,
+                                "reason": "%s: %s" % (type(exc).__name__, exc)}
+            env["tesseract_available"] = False
+        return env
     except Exception as exc:      # noqa: BLE001
         return {"capability": CAPABILITY, "available": False,
-                "engine": "", "custom_engine": _ENGINE is not None,
+                "engine": "", "engine_mode": _ENGINE_MODE,
+                "custom_engine": _ENGINE is not None,
                 "reason": "%s: %s" % (type(exc).__name__, exc),
-                "languages": [], "winrt": {}, "backend": ""}
+                "languages": [], "winrt": {}, "backend": "",
+                "tesseract": {"available": False, "reason": str(exc)},
+                "tesseract_available": False}
 
 
 # --------------------------------------------------------------------------
@@ -1255,7 +1578,7 @@ def selfcheck(quick: bool = True) -> dict:
              "set_engine" in exp, "有出路")
 
     # ============ 3) 自定义引擎注入 ============
-    saved = _me._ENGINE, _me._ENGINE_NAME
+    saved = _me._ENGINE, _me._ENGINE_NAME, _me._ENGINE_MODE
     try:
         calls = []
 
@@ -1324,8 +1647,94 @@ def selfcheck(quick: bool = True) -> dict:
              _raise_type(lambda: _me.find_all_text("x", window=1))
              == "RuntimeError", "传播")
     finally:
-        _me._ENGINE, _me._ENGINE_NAME = saved
+        _me._ENGINE, _me._ENGINE_NAME, _me._ENGINE_MODE = saved
         _me._PROBE["done"] = False
+
+    # ============ 3b) 引擎模式路由（字符串选引擎）============
+    # 给**真** tesseract 模块打临时补丁验证路由，不依赖本机装没装。
+    try:
+        OT = _me._tesseract_mod()
+        _saved_t = (OT.is_available, OT.unavailable_reason, OT.version,
+                    OT.languages, OT.describe_environment, OT.recognize)
+        _fake_calls = []
+
+        def _t_avail():
+            return True
+
+        def _t_reason():
+            return "假的：没装"
+
+        def _t_version():
+            return "tesseract 0.0.0-fake"
+
+        def _t_langs():
+            return ["eng"]
+
+        def _t_env():
+            return {"available": True, "version": "tesseract 0.0.0-fake",
+                    "exe": "fake.exe", "languages": ["eng"], "reason": ""}
+
+        def _t_rec(bitmap, region=None, language="", timeout=10.0):
+            _fake_calls.append({"region": region, "lang": language})
+            return [_me.OcrWord(text="假词", rect=(1, 2, 3, 4),
+                                confidence=0.5, engine="tesseract")]
+
+        OT.is_available = _t_avail
+        OT.unavailable_reason = _t_reason
+        OT.version = _t_version
+        OT.languages = _t_langs
+        OT.describe_environment = _t_env
+        OT.recognize = _t_rec
+        try:
+            _me.set_engine("tesseract")
+            _add("★ set_engine('tesseract') 切模式",
+                 _me.engine_mode() == "tesseract", _me.engine_mode())
+            _add("★ tesseract 模式下 is_available 走旁路",
+                 _me.is_available() is True, "True")
+            _add("tesseract 模式 engine_name 是 tesseract",
+                 _me.engine_name() == "tesseract", _me.engine_name())
+            _add("tesseract 模式 languages 来自旁路",
+                 _me.languages() == [{"tag": "eng", "display": "eng"}],
+                 str(_me.languages()))
+
+            _me.set_engine("windows")
+            _add("★ set_engine('windows') 切回原生",
+                 _me.engine_mode() == "windows", _me.engine_mode())
+
+            _me.set_engine("auto")
+            _add("★ set_engine('auto') 恢复默认",
+                 _me.engine_mode() == "auto", _me.engine_mode())
+
+            _add("★ 非法引擎名抛 ValueError",
+                 _raise_type(lambda: _me.set_engine("不存在"))
+                 == "ValueError", "抛了")
+
+            # 路由真的走到了假 tesseract（位图级 recognize）
+            class _Bmp2:
+                width, height, stride = 2, 2, 8
+                pixels = bytes(16)
+
+            _me.set_engine("tesseract")
+            got_words = _me.recognize(_Bmp2())
+            _add("★ recognize 路由到 tesseract 旁路",
+                 len(got_words) == 1 and got_words[0].text == "假词",
+                 str([w.text for w in got_words]))
+            _add("tesseract 旁路的词带 engine 标记",
+                 bool(got_words) and got_words[0].engine == "tesseract",
+                 "tesseract")
+            _add("tesseract 旁路收到了语言参数",
+                 _fake_calls and _fake_calls[0]["lang"] in ("chi_sim+eng", ""),
+                 str(_fake_calls[:1]))
+        finally:
+            (OT.is_available, OT.unavailable_reason, OT.version,
+             OT.languages, OT.describe_environment, OT.recognize) = _saved_t
+            _me.set_engine(None)
+    except Exception as exc:      # noqa: BLE001
+        _add("引擎模式路由", False, "%s: %s" % (type(exc).__name__, exc))
+        try:
+            _me.set_engine(None)
+        except Exception:      # noqa: BLE001
+            pass
 
     # ============ 4) 像素转换 ============
     class _Bmp:
