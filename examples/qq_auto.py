@@ -62,6 +62,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import tempfile
 import time
 from typing import List, Optional, Tuple
 
@@ -124,22 +125,68 @@ def banner(title: str) -> None:
 # ==========================================================================
 # 一、找到 QQ 窗口
 # ==========================================================================
+def _window_has_content(hwnd: int) -> bool:
+    """激活窗口并抓图，检查界面是否"真的有内容"。
+
+    ★ 为什么需要这道检查 —— 实测踩过的坑：
+      QQ 会留下**空白残留窗**（同进程、大尺寸、整片纯背景色）。
+      2026-10-18 连续两次抓到它：抓图 1600x1200 全屏灰度 20，
+      后续所有校准算法自然全部失效。按面积选窗根本防不住，
+      唯一可靠的办法是抓图抽样验证"非背景像素占比"。
+    """
+    import collections
+    try:
+        FG.activate_once(hwnd)
+        time.sleep(0.8)
+        shot, _origin = _grab_client_screen(hwnd)
+        cnt = collections.Counter()
+        n = 0
+        for y in range(0, shot.height, 16):
+            for x in range(0, shot.width, 16):
+                px = shot.get_pixel(x, y)
+                cnt[sum(px) // len(px)] += 1
+                n += 1
+        _, mode_n = cnt.most_common(1)[0]
+        rich = (n - mode_n) / n > 0.02      # 超过 2% 像素偏离背景 = 有内容
+        if not rich:
+            log("窗口", "hwnd=0x%X 抓图是纯色（空白残留窗或被遮挡）" % hwnd)
+        return rich
+    except Exception as exc:      # noqa: BLE001
+        log("窗口", "hwnd=0x%X 验证失败：%s" % (hwnd, exc))
+        return False
+
+
 def find_qq_window() -> Optional[W.WindowInfo]:
     """找 QQ 主窗口。找不到返回 None（**不抛**，让上层决定要不要启动）。
 
     ★ 为什么按进程名而不是标题找：
       QQ 的窗口标题会随会话变（"QQ" / "张三" / "群聊(3)"），
       按标题匹配是自找麻烦；进程名稳定得多。
+
+    ★ 为什么不能只挑面积最大的窗口：
+      见 :func:`_window_has_content` —— QQ 的空白残留窗尺寸比主窗口
+      还大。所以这里按面积降序逐个"激活 → 抓图 → 内容验证"，
+      第一个通过的才返回；全部失败则退回面积最大的（并大声警告）。
     """
     for proc in QQ_PROCESS_NAMES:
         try:
             wins = W.find_windows(process=proc, usable_only=False)
         except Exception:      # noqa: BLE001
             continue
-        # 过滤掉 0x0 的隐藏窗口（QQ 有一堆不可见的辅助窗口）
-        for w in wins:
-            if w.rect[2] > 200 and w.rect[3] > 200 and not w.minimized:
+        cand = [w for w in wins
+                if w.rect[2] > 600 and w.rect[3] > 500 and not w.minimized]
+        if not cand:
+            continue
+        cand.sort(key=lambda w: w.rect[2] * w.rect[3], reverse=True)
+        fallback = cand[0]
+        for w in cand[:3]:          # 最多试 3 个，别在辅助窗口上耗太久
+            log("窗口", "候选 hwnd=0x%X %dx%d → 激活并验证内容…"
+                % (w.hwnd, w.rect[2], w.rect[3]))
+            if _window_has_content(w.hwnd):
                 return w
+        log("窗口", "⚠⚠ 没有窗口通过内容验证，退回面积最大的 0x%X —— "
+                    "校准可能拿到空白图！" % fallback.hwnd)
+        return fallback
     return None
 
 
@@ -177,6 +224,32 @@ def activate(hwnd: int) -> bool:
     if ok:
         time.sleep(0.35)      # 等窗口动画结束，不然点击可能被吞
     return ok
+
+
+def _foreground_is(hwnd: int) -> bool:
+    """前台窗口是否就是 hwnd（拿不到前台句柄时按失败处理）。"""
+    return (FG.foreground_hwnd() or 0) == hwnd
+
+
+def focus_qq(hwnd: int, retries: int = 4) -> bool:
+    """激活 QQ 并**验证**前台真的是它；失败就重试。
+
+    ★ activate_once 返回 True ≠ 焦点真的到手 —— 实测：activate_once
+      报成功，0.8 秒后前台却是一个 Edge 窗口（网页周期性抢焦点 /
+      Windows 前台锁）。点错窗口还是小事，打错窗口（比如往浏览器
+      地址栏里打字再回车）就是事故了。所以**必须验证 + 重试**：
+      激活 → sleep → 核对 foreground_hwnd()，不匹配再来。
+    """
+    for i in range(retries):
+        activate(hwnd)
+        time.sleep(0.45)
+        if _foreground_is(hwnd):
+            if i:
+                log("窗口", "第 %d 次重试后拿到前台焦点" % (i + 1))
+            return True
+        log("窗口", "激活后前台不是 QQ（0x%X），重试 %d/%d"
+            % (FG.foreground_hwnd() or 0, i + 1, retries))
+    return False
 
 
 # ==========================================================================
@@ -253,7 +326,257 @@ def client_to_screen(hwnd: int, cx: int, cy: int) -> Tuple[int, int]:
 
 
 # ==========================================================================
-# 三、相对坐标兜底（QQ 封死 UIA 时的现实方案）
+# 三、自动校准：在"大致区域"里找真正的控件矩形
+# ==========================================================================
+def _grab_client_screen(hwnd: int):
+    """抓客户区的**屏幕区域**，返回 ``(bitmap, 客户区屏幕原点)``。
+
+    ★ 为什么不用 ``grab_window``：
+      QQ 是 Electron（Chromium GPU 合成），``PrintWindow`` / ``BitBlt``
+      抓出来是**全黑**。必须先激活窗口，再抓它在屏幕上的那块区域。
+
+    ★ 为什么抓"屏幕"而不是"窗口"：
+      校准用的是**客户区坐标**，而 ``grab_screen`` 给的是屏幕坐标图；
+      两者只差一个原点 ``g.client[:2]``，换算成本最低。
+    """
+    from avatar import perception as P
+
+    g = P.geometry(hwnd)
+    cl, ct, cw, ch = g.client
+    shot = C.grab_screen((cl, ct, cw, ch))
+    return shot, (cl, ct)
+
+
+def _gray_rows(bmp, x0: int, y0: int, w: int, h: int, step: int = 2):
+    """把位图的一块区域转成**灰度二维列表**（``y`` 从顶部算）。
+
+    ★ 两个坑：
+      1. ``Bitmap.pixels`` 是 DIB **自下而上**序 —— 第 0 行在缓冲区末尾，
+         所以取第 ``y`` 行要写 ``(H - 1 - y)``。忘了这一步，检测出来的
+         矩形会**上下颠倒**，而且看起来"有结果"，很难发现。
+      2. ``step`` 隔点采样：300x100 的区域全采样是 3 万次像素读，
+         step=2 降到 7500 次，纯 Python 也只要几毫秒。
+    """
+    px, stride, H = bmp.pixels, bmp.stride, bmp.height
+    rows = []
+    for y in range(0, h, step):
+        row = []
+        base = (H - 1 - (y0 + y)) * stride
+        for x in range(0, w, step):
+            o = base + (x0 + x) * 4
+            b, g, r = px[o], px[o + 1], px[o + 2]
+            # 整数版 Rec.601 灰度，比浮点快 3 倍且够用
+            row.append((r * 299 + g * 587 + b * 114) // 1000)
+        rows.append(row)
+    return rows
+
+
+# ★ 墨迹检测常量（2026-10 实测 QQ NT 深色主题 1640x1160 得出）
+#   搜索框背景和页面背景灰度**完全相同**（32 vs 32）—— 色块法必失效；
+#   但框内"搜索"占位文字 + 放大镜图标是亮墨迹（46~63，比背景亮 14+）。
+#   按墨迹密度定位，背景同色也无所谓。标题栏文字同样有墨迹，
+#   靠"带上方必须有足量空白行"排除（标题栏上面贴着窗口边框，没有空白）。
+CALIB_INK_DELTA = 14                            # 墨迹判定：灰度 ≥ 背景众数 + 14
+# ★ x 上限 0.30W 而不是 0.40W —— 实测 0.40W 会把"左栏右上角的 + 按钮"
+#   和聊天区标题一起扫进来，列投影连成一条假带，点击点落在两个元素之间。
+#   搜索框的占位文字/图标在左栏左侧 0~0.15W，0.30W 足够且更安全。
+CALIB_SEARCH_SCAN = (0.00, 0.00, 0.30, 0.30)    # 搜索框扫描区：左栏顶部
+CALIB_INPUT_SCAN = (0.35, 0.60, 1.00, 0.98)     # 输入框扫描区：右下角
+
+
+def _find_ink_band(bmp, region, *, step: int = 4,
+                   blank_ratio: float = 0.08, gap_rows: int = 2,
+                   min_h: int = 24, max_h: int = 96,
+                   above_blank_rows: int = 5, pick: str = "first"):
+    """在 ``region`` 里找一条"墨迹带"，返回 ``(x, y, w, h)`` 或 None。
+
+    ## 算法（纯 Python，步长采样，毫秒级）
+
+    1. 灰度光栅扫描（:func:`_gray_rows`，step=4）
+    2. 逐行算"墨迹率"：灰度 ≥ 背景众数+14 的像素占比；≥8% 视为内容行
+    3. 内容行合并成带（相邻内容行允许 ≤2 行空白间隔）
+    4. 带过滤：
+       · 高度 min_h~max_h（搜索框 ≈56px，标题栏 ≈40px 靠下一条过滤）
+       · **带上方必须有 ≥above_blank_rows 行连续空白** ——
+         实测数据：搜索框带上方有 40px 空白 ✓，
+         标题栏带上方只有 8~12px 空白（贴着窗口边框）✗
+    5. 对带做列投影（该列墨迹行数 ≥2），取最长连续列段
+       （允许 12px 小间断），段外接矩形即返回值
+
+    ``pick="first"`` 取最上面的带（搜索框），
+    ``pick="last"`` 取最下面的带（输入框工具栏图标行）。
+    """
+    x0, y0, rw, rh = region
+    rows = _gray_rows(bmp, x0, y0, rw, rh, step=step)
+    if not rows or not rows[0]:
+        return None
+    n_cols = len(rows[0])
+
+    # ---- 1) 背景众数 + 墨迹阈值 ----
+    counts = {}
+    for row in rows:
+        for v in row:
+            counts[v] = counts.get(v, 0) + 1
+    bg = max(counts.items(), key=lambda kv: kv[1])[0]
+    ink_th = bg + CALIB_INK_DELTA
+
+    # ---- 2) 行墨迹剖面 ----
+    prof = []
+    for row in rows:
+        xs = [i for i, v in enumerate(row) if v >= ink_th]
+        prof.append((len(xs) / n_cols >= blank_ratio, xs))
+
+    # ---- 3) 内容行合并成带 ----
+    bands, cur, gap = [], None, 0
+    for yi, (is_ink, _xs) in enumerate(prof):
+        if is_ink:
+            if cur is None:
+                cur = [yi, yi]
+            else:
+                cur[1] = yi
+            gap = 0
+        elif cur is not None:
+            gap += 1
+            if gap > gap_rows:
+                bands.append(cur)
+                cur, gap = None, 0
+    if cur is not None:
+        bands.append(cur)
+
+    def _band_ok(b):
+        h_px = (b[1] - b[0] + 1) * step
+        if h_px < min_h or h_px > max_h:
+            return False
+        blank = 0
+        for yi in range(b[0] - 1, -1, -1):     # 向上数连续空白行
+            if prof[yi][0]:
+                break
+            blank += 1
+        return blank >= above_blank_rows
+
+    ok = [b for b in bands if _band_ok(b)]
+    if not ok:
+        return None
+    b = ok[0] if pick == "first" else ok[-1]
+
+    # ---- 5) 列投影 → 最长连续墨迹列段 ----
+    best_seg, seg, gapc = None, None, 0
+    for xi in range(n_cols):
+        n = sum(1 for yi in range(b[0], b[1] + 1) if rows[yi][xi] >= ink_th)
+        if n >= 2:
+            if seg is None:
+                seg = [xi, xi]
+            else:
+                seg[1] = xi
+            gapc = 0
+        elif seg is not None:
+            gapc += 1
+            if gapc > 3:
+                if best_seg is None or seg[1] - seg[0] > best_seg[1] - best_seg[0]:
+                    best_seg = seg
+                seg, gapc = None, 0
+    if seg is not None and (best_seg is None or
+                            seg[1] - seg[0] > best_seg[1] - best_seg[0]):
+        best_seg = seg
+    if not best_seg or best_seg[1] - best_seg[0] < 8:
+        return None
+
+    return (x0 + best_seg[0] * step, y0 + b[0] * step,
+            (best_seg[1] - best_seg[0] + 1) * step,
+            (b[1] - b[0] + 1) * step)
+
+
+def _save_template(shot, rect, path: str) -> bool:
+    """把检测到的矩形裁下来存成 PNG（供 ``--template-search`` 复用）。"""
+    try:
+        from avatar.vision.image_prep import encode_png
+        x, y, w, h = rect
+        tpl = shot.region(x, y, w, h)
+        with open(path, "wb") as f:
+            f.write(encode_png(tpl))
+        return True
+    except Exception:      # noqa: BLE001
+        return False
+
+
+def calibrate_search_box(hwnd: int, client_size: Tuple[int, int],
+                         save_path: str = "") -> Optional[Tuple[int, int]]:
+    """自动找搜索框中心（客户区坐标）。**失败返回 None，不抛。**
+
+    流程：抓客户区 → 左栏顶部扫描 → 找"墨迹带" → 打印坐标。
+    墨迹带 = 搜索框内的"搜索"占位文字 + 放大镜图标（亮像素团）。
+    """
+    w, h = client_size
+    ax0, ay0, ax1, ay1 = CALIB_SEARCH_SCAN
+    region = (max(0, int(w * ax0)), max(16, int(h * ay0)),
+              int(w * ax1) - max(0, int(w * ax0)),
+              int(h * ay1) - max(16, int(h * ay0)))
+    log("校准", "搜索框扫描区：客户区 %s（左栏顶部 30%%x30%%）" % (region,))
+
+    try:
+        shot, _origin = _grab_client_screen(hwnd)
+    except Exception as exc:      # noqa: BLE001
+        log("校准", "截图失败：%s" % exc)
+        return None
+
+    rect = _find_ink_band(shot, region, pick="first")
+    if not rect:
+        log("校准", "未找到搜索框墨迹带（占位文字/图标缺失？或不在主面板）")
+        return None
+
+    x, y, bw, bh = rect
+    # ★ 点击点取带内偏左：占位文字/图标在框内左侧，点文字上也能聚焦输入框，
+    #   无需精确命中框边缘（深色主题下框边缘肉眼都难分辨）
+    center = (x + int(bw * 0.45), y + bh // 2)
+    log("校准", "墨迹带：x=%d y=%d w=%d h=%d" % (x, y, bw, bh))
+    log("校准", "★ 自动找到的搜索框位置：(x, y) = (%d, %d)" % center)
+
+    if save_path and _save_template(shot, rect, save_path):
+        log("校准", "模板已存：%s（下次可 --template-search 复用）" % save_path)
+    return center
+
+
+def calibrate_input_box(hwnd: int, client_size: Tuple[int, int],
+                        save_path: str = "") -> Optional[Tuple[int, int]]:
+    """自动找消息输入框点击点（客户区坐标）。**失败返回 None，不抛。**
+
+    思路：空输入框没有文字（没墨迹），但输入框**底部工具栏**的表情/
+    截图/发送图标是亮墨迹团 —— 在右下角找**最下面**的墨迹带（=工具栏），
+    点击它上方约 5%% 窗口高处 = 输入框编辑区中心。
+    """
+    w, h = client_size
+    ax0, ay0, ax1, ay1 = CALIB_INPUT_SCAN
+    region = (max(0, int(w * ax0)), max(0, int(h * ay0)),
+              int(w * ax1) - max(0, int(w * ax0)),
+              int(h * ay1) - max(0, int(h * ay0)))
+    log("校准", "输入框扫描区：客户区 %s（右下角）" % (region,))
+
+    try:
+        shot, _origin = _grab_client_screen(hwnd)
+    except Exception as exc:      # noqa: BLE001
+        log("校准", "截图失败：%s" % exc)
+        return None
+
+    # 工具栏图标带：矮（12~60px）、上方空白要求放宽（编辑区本来就空）
+    rect = _find_ink_band(shot, region, pick="last",
+                          min_h=12, max_h=60, above_blank_rows=3)
+    if not rect:
+        log("校准", "未找到输入框工具栏图标带（会话可能没打开？）")
+        return None
+
+    x, y, bw, bh = rect
+    # ★ 图标带贴着输入框底部：点击点 = 图标带上方 5% 窗口高 → 编辑区中心
+    center = (max(region[0], x + bw // 2), max(region[1], y - int(h * 0.05)))
+    log("校准", "工具栏图标带：x=%d y=%d w=%d h=%d" % (x, y, bw, bh))
+    log("校准", "★ 自动找到的消息输入框位置：(x, y) = (%d, %d)" % center)
+
+    if save_path and _save_template(shot, rect, save_path):
+        log("校准", "模板已存：%s" % save_path)
+    return center
+
+
+# ==========================================================================
+# 四、相对坐标兜底（自动校准也失败时的最后手段）
 # ==========================================================================
 def _load_bmp(path: str):
     """读一个 24 位 BMP 成 ``Bitmap``（零依赖，30 行）。
@@ -333,6 +656,9 @@ def relative_point(client_size: Tuple[int, int],
 # ==========================================================================
 def human_click(hwnd: int, cx: int, cy: int, *, why: str = "") -> None:
     """真人化点击一个**客户区**坐标。"""
+    # ★ 点击前必须确认前台是 QQ —— 点错窗口比点不准更糟
+    if not _foreground_is(hwnd):
+        focus_qq(hwnd)
     sx, sy = client_to_screen(hwnd, cx, cy)
     log("执行", "点击%s → 屏幕 (%d, %d)" % (("（" + why + "）") if why else "",
                                             sx, sy))
@@ -341,7 +667,7 @@ def human_click(hwnd: int, cx: int, cy: int, *, why: str = "") -> None:
     time.sleep(0.25)
 
 
-def human_type(text: str) -> None:
+def human_type(text: str, hwnd: int = 0) -> None:
     """真人化打字。
 
     ★ typo_rate=0 是刻意的：
@@ -349,6 +675,10 @@ def human_type(text: str) -> None:
       万一 QQ 把退格当成快捷键（有的版本会），消息就乱了。
       "真人感"由按键间隔和停顿提供，不需要真的打错。
     """
+    # ★ 打字前确认前台是 QQ —— 往别的窗口打字是自动化最危险的事故
+    #   （往浏览器地址栏打字再被回车，就跳到乱七八糟的网站去了）
+    if hwnd and not _foreground_is(hwnd):
+        focus_qq(hwnd)
     log("执行", "打字：%r（高斯间隔 + 词间停顿）" % text)
     HK.type_text_human(text, wpm=180, skill=1.0, typo_rate=0.0,
                        pause_at_end=True)
@@ -454,8 +784,9 @@ def run(friend: str, message: str, *, send: bool,
     if not win:
         log("窗口", "失败：找不到 QQ。请先手动打开并登录 QQ，再重跑。")
         return 2
-    if not activate(win.hwnd):
-        log("窗口", "⚠ 激活失败（可能被前台锁挡住），继续尝试…")
+    if not focus_qq(win.hwnd):
+        log("窗口", "⚠⚠ 多次尝试后前台仍不是 QQ —— 点击/打字可能落到别的窗口！")
+        log("窗口", "⚠⚠ 建议手动点一下 QQ 窗口再跑，或关掉抢焦点的应用")
 
     w, h = win.client_size if win.client_size[0] > 0 else (win.rect[2], win.rect[3])
     log("窗口", "客户区 %dx%d" % (w, h))
@@ -478,12 +809,24 @@ def run(friend: str, message: str, *, send: bool,
     pt, method = locate_with_chain(chain, "搜索", win.hwnd, (w, h),
                                    region=(0, 0, w, min(140, h // 5)),
                                    template=tmpl)
+
+    # ★ 第二道：自动校准（在相对坐标附近"找矩形"）
+    #   为什么加这道：五层链在 QQ NT 上基本全灭（UIA 封死、没模板），
+    #   而固定相对坐标会随版本改布局而点偏（实测点到过"个性标签"）。
+    #   自动校准不依赖任何配置：截一块区域，按"扁长纯色块"找出来。
     if pt is None:
-        # 兜底：相对坐标。QQ NT 的搜索框固定在左上区域。
-        pt = relative_point((w, h), 0.26, 0.030)
-        method = "relative(0.26, 0.030)"
-        log("降级", "fallback_used=True  reason=五层未命中，改用相对坐标")
-        log("降级", "若位置不准，请手动截图该区域做模板，见文件末尾说明")
+        banner("②b 自动校准搜索框")
+        tpl_path = os.path.join(tempfile.gettempdir(), "qq_search_auto.png")
+        pt = calibrate_search_box(win.hwnd, (w, h), save_path=tpl_path)
+        if pt is not None:
+            method = "auto-calibrate"
+        else:
+            # ★ 第三道：固定相对坐标（最后手段，**必须大声警告**）
+            pt = relative_point((w, h), 0.26, 0.030)
+            method = "relative(fallback)"
+            log("校准", "⚠⚠ 自动校准失败 → 回退固定坐标 (0.26, 0.030)")
+            log("校准", "⚠⚠ 这个坐标历史上点偏过（点到个性标签）。"
+                        "请用 avatar shot 截图人工核对！")
     sx, sy = client_to_screen(win.hwnd, *pt)
     log("定位", "搜索框 → 客户区 %s（%s）→ 屏幕 (%d, %d)"
         % (pt, method, sx, sy))
@@ -497,7 +840,7 @@ def run(friend: str, message: str, *, send: bool,
     # ---- 3) 搜索好友 ----
     banner("③ 搜索好友")
     human_click(win.hwnd, *pt, why="搜索框")
-    human_type(friend)
+    human_type(friend, win.hwnd)
     log("执行", "回车确认搜索")
     from avatar.input import keyboard as K
     K.press("enter")
@@ -516,8 +859,16 @@ def run(friend: str, message: str, *, send: bool,
 
     # ---- 5) 点输入框、打字 ----
     banner("⑤ 输入消息")
-    input_pt = relative_point((w, h), 0.52, 0.88)
-    log("定位", "消息输入框 → 客户区 %s（相对坐标：底部中间）" % (input_pt,))
+    # ★ 自动校准输入框：右下角候选区里找最大的扁长色块。
+    #   原来写死 (0.52, 0.88)，窗口一改布局就点空。
+    input_pt = calibrate_input_box(
+        win.hwnd, (w, h),
+        save_path=os.path.join(tempfile.gettempdir(), "qq_input_auto.png"))
+    if input_pt is None:
+        input_pt = relative_point((w, h), 0.52, 0.88)
+        log("校准", "⚠⚠ 输入框自动校准失败 → 回退固定坐标 (0.52, 0.88)")
+        log("校准", "⚠⚠ 可能点不中输入框，消息会打不进去。请人工核对！")
+    log("定位", "消息输入框 → 客户区 %s" % (input_pt,))
     human_click(win.hwnd, *input_pt, why="输入框")
 
     # 发送前先记一个"墨迹基线"，用于发送后对比
@@ -527,7 +878,7 @@ def run(friend: str, message: str, *, send: bool,
     except Exception:      # noqa: BLE001
         before = 0.0
 
-    human_type(message)
+    human_type(message, win.hwnd)
 
     # ---- 6) 发送 + 验证 ----
     banner("⑥ 发送并验证")
