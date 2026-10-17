@@ -450,6 +450,17 @@ class McpBridge:
             return list(t) if isinstance(t, list) else []
         return []
 
+    def send_task(self, goal: str) -> Tuple[bool, str]:
+        """发一个任务给主包（``execute_autonomous_task``）。
+
+        输入框的 Enter 就调这个。返回 ``(成功, 说明)``。
+        """
+        if not str(goal or "").strip():
+            return False, "任务目标不能为空"
+        return self.call_tool_text(
+            "execute_autonomous_task", {"goal": str(goal)},
+            timeout=300.0)
+
     # ---------------- 展示 ----------------
     def describe(self) -> str:
         return "\n".join([
@@ -463,6 +474,115 @@ class McpBridge:
             "  收发    : 发 %d / 收 %d" % (self.sent, self.received),
             "  超时    : %.0fs" % self.timeout,
         ] + (["  错误    : %s" % self.error] if self.error else []))
+
+
+# --------------------------------------------------------------------------
+# 任务状态轮询（订阅的"穷人版"）
+# --------------------------------------------------------------------------
+class TaskStatePoller:
+    """轮询主包的任务状态，变化时触发回调。
+
+    ## 为什么是轮询不是真订阅
+
+    stdio 的 MCP 是**请求-响应**协议，没有服务器推送通道。
+    要"订阅"只能轮询 —— 每 2 秒问一次 ``tasks_list``，
+    和上次快照 diff，变了才触发回调。
+
+    ⚠ **轮询频率受限频器管**（:class:`avatar_shell.presence.RateLimiter`）：
+    回调里做的事（重绘悬浮球、更新 tooltip）不能超过 2Hz ——
+    任务事件密集时不节流，悬浮球会高频重画发抖。
+
+    ## 回调契约
+
+    ``callback(state: str, task: dict) -> None``
+
+    - ``state`` —— ``"running"`` / ``"idle"`` / ``"needs_human"``
+      / ``"error"``（已经过一轮归一化）
+    - ``task`` —— 变化的那条任务（含 ``title`` / ``state`` /
+      ``step`` / ``total`` 等字段，字段名以主包返回为准）
+
+    回调抛异常**不影响轮询继续**（外壳不能被一个回调打死）。
+    """
+
+    def __init__(self, bridge: "McpBridge", *,
+                 min_interval: float = 0.5) -> None:
+        from . import presence as P
+        self.bridge = bridge
+        #: 频率限制器（2Hz）
+        self._limiter = P.RateLimiter(min_interval=min_interval)
+        #: 回调列表
+        self._subs: List[Callable[[str, Dict[str, Any]], Any]] = []
+        #: 上次快照：``{task_id: state}``
+        self._snapshot: Dict[str, str] = {}
+        self.polls = 0
+        self.fired = 0
+
+    def subscribe(self, callback: Callable[[str, Dict[str, Any]], Any]) -> None:
+        """注册一个状态变化回调。"""
+        if callable(callback):
+            self._subs.append(callback)
+
+    @staticmethod
+    def _normalize(raw_state: str) -> str:
+        """主包的任务状态 → 外壳的四种状态之一。
+
+        主包的状态词和外壳的可能不一样（比如 ``waiting_human`` vs
+        ``needs_human``）。**归一化放这里**，回调方拿到的永远是
+        ``running`` / ``idle`` / ``needs_human`` / ``error``。
+        """
+        s = str(raw_state or "").lower()
+        if "human" in s or "wait" in s:
+            return "needs_human"
+        if s in ("success", "done", "completed", "finished"):
+            return "idle"
+        if s in ("failed", "error", "aborted"):
+            return "error"
+        if s in ("running", "in_progress", "pending", "paused"):
+            return "running"
+        return "idle"
+
+    def poll(self) -> List[Dict[str, Any]]:
+        """轮一次。返回**本次变化的任务**列表（可能为空）。
+
+        频率超限时返回空列表（这次的变化被丢弃 —— 反正下次
+        轮询还会带上最新状态，不会丢信息）。
+        """
+        self.polls += 1
+        if not self._limiter.allow():
+            return []
+        try:
+            tasks = self.bridge.list_tasks(limit=5)
+        except Exception:      # noqa: BLE001
+            return []
+        if not isinstance(tasks, list):
+            return []
+
+        changed: List[Dict[str, Any]] = []
+        new_snap: Dict[str, str] = {}
+        for t in tasks:
+            if not isinstance(t, dict):
+                continue
+            tid = str(t.get("id") or t.get("task_id") or "")
+            raw = str(t.get("state") or "")
+            new_snap[tid] = raw
+            if self._snapshot.get(tid) != raw:
+                changed.append(t)
+        self._snapshot = new_snap
+
+        for t in changed:
+            state = self._normalize(str(t.get("state") or ""))
+            self.fired += 1
+            for cb in list(self._subs):
+                try:
+                    cb(state, t)
+                except Exception:      # noqa: BLE001
+                    pass          # 一个回调炸了不能带走别的
+        return changed
+
+    def stats(self) -> Dict[str, int]:
+        return {"polls": self.polls, "fired": self.fired,
+                "subs": len(self._subs),
+                "dropped": self._limiter.dropped}
 
 
 def describe_bridge() -> str:

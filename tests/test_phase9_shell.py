@@ -96,7 +96,7 @@ class TestStateMachine:
 
     def test_animation_semantics(self):
         """★ NEEDS_HUMAN 闪得最快；ERROR 不闪。"""
-        assert STATE_ANIMATION[AgentState.NEEDS_HUMAN][1] == 0.5
+        assert STATE_ANIMATION[AgentState.NEEDS_HUMAN][1] == 0.4
         assert STATE_ANIMATION[AgentState.ERROR][0] is False
         assert STATE_ANIMATION[AgentState.IDLE][0] is False
 
@@ -193,14 +193,16 @@ class TestStateMachine:
 # 3. 菜单构造
 # ==========================================================================
 class TestMenu:
-    def test_five_items_two_separators(self):
+    def test_six_items_two_separators(self):
+        """6 个可点项 + 2 个分隔（2026-10-17 加了「查看最近任务」）。"""
         real = [i for i in MENU.MENU_ITEMS if not i.separator]
         seps = [i for i in MENU.MENU_ITEMS if i.separator]
-        assert len(real) == 5 and len(seps) == 2
+        assert len(real) == 6 and len(seps) == 2
 
     def test_commands_present(self):
         cmds = {i.cmd for i in MENU.MENU_ITEMS if not i.separator}
-        assert cmds == {"start", "status", "pause", "intervene", "quit"}
+        assert cmds == {"start", "status", "recent", "pause",
+                        "intervene", "quit"}
 
     def test_quit_last(self):
         """★ 危险操作放最后 —— 防误点。"""
@@ -345,7 +347,7 @@ class TestBallWindow:
 
     def test_alpha_constant_when_idle(self):
         b = BALL.BallWindow()
-        assert b._current_alpha() == 235
+        assert b._current_alpha() == 255   # 静止状态满不透明
 
     def test_constants(self):
         assert BALL.WS_EX_LAYERED == 0x00080000

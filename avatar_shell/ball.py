@@ -65,6 +65,7 @@ import time
 from ctypes import wintypes
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from . import presence as P
 from .state import (
     STATE_ANIMATION,
     STATE_COLORS,
@@ -298,6 +299,13 @@ class BallWindow:
         self._last_paint = 0.0
         self._hover = False
         self.error = ""
+        #: 状态切换的渐变起点：``(旧状态, started_at)``。
+        #: ``None`` = 不在渐变中。200ms 内重绘插值，之后只改 alpha。
+        self._transition: Optional[Tuple[str, float]] = None
+        #: needs_human 提示音是否开（默认开；测试与静音场景可关）。
+        self.alert_sound = True
+        #: 主循环 tick 回调（热键 / tooltip 轮询挂这里）。
+        self._tick_cb = None
 
     # ---------------- 生命周期 ----------------
     def create(self) -> bool:
@@ -381,9 +389,21 @@ class BallWindow:
 
     # ---------------- 状态 ----------------
     def set_state(self, state: Any, reason: str = "") -> bool:
-        """切状态。**非法转换会被吞掉**（UI 不该因为状态机报错而崩）。"""
+        """切状态。**非法转换会被吞掉**（UI 不该因为状态机报错而崩）。
+
+        切状态时记下渐变起点（旧色 → 新色，200ms 过渡），
+        进入 needs_human 时在**后台线程**播提示音（880Hz x 3）——
+        放后台是因为 GUI 线程被 Beep 占住 600ms 会卡顿。
+        """
         try:
+            old = self.presence.state
             self.presence.set(state, reason)
+            new = self.presence.state
+            if old != new:
+                # 记渐变起点；same→same 不渐变
+                self._transition = (old, time.monotonic())
+                if new == AgentState.NEEDS_HUMAN:
+                    self._play_alert()
         except Exception as exc:      # noqa: BLE001
             # 状态机拒绝是它的事，UI 保持原状继续跑
             self.error = str(exc)[:120]
@@ -391,13 +411,40 @@ class BallWindow:
         self._paint()
         return True
 
+    def _play_alert(self) -> None:
+        """后台线程播 needs_human 提示音（880Hz/200ms x 3）。"""
+        if not self.alert_sound:
+            return
+
+        def _beep():
+            try:
+                import winsound
+                freq, dur, times = P.ALERT_SOUND
+                for _ in range(times):
+                    winsound.Beep(freq, dur)
+            except Exception:      # noqa: BLE001
+                pass
+
+        try:
+            import threading
+            threading.Thread(target=_beep, daemon=True).start()
+        except Exception:      # noqa: BLE001
+            pass
+
     @property
     def color(self) -> Tuple[int, int, int]:
-        return STATE_COLORS.get(self.presence.state, (128, 128, 128))
+        """当前该画的颜色（渐变中取插值，否则取状态色）。"""
+        if self._transition is not None:
+            old, started = self._transition
+            c = P.transition_color(old, self.presence.state, started)
+            if P.transition_progress(started) >= 1.0:
+                self._transition = None       # 渐变结束
+            return c
+        return P.color(self.presence.state)
 
     @property
     def label(self) -> str:
-        return STATE_LABELS.get(self.presence.state, self.presence.state)
+        return P.label(self.presence.state)
 
     # ---------------- 交互 ----------------
     def set_click_through(self, on: bool) -> bool:
@@ -506,21 +553,37 @@ class BallWindow:
             return False
 
     def _current_alpha(self) -> int:
-        """按动画参数算当前的透明度。
+        """按动画参数算当前的透明度（委托 presence 纯逻辑层）。
 
-        - 不闪 → 常亮 235
-        - 闪   → 在 120~255 之间正弦摆动
-
-        **用正弦而不是方波** —— 方波看起来像"坏了在闪"，
-        正弦看起来像"呼吸"。
+        - idle / error —— 恒 255（静止）
+        - running —— 0.8s 余弦呼吸，alpha 115~255
+        - needs_human —— 0.4s 满幅闪烁（0 / 255）
         """
-        blink, period = STATE_ANIMATION.get(
-            self.presence.state, (False, 0.0))
-        if not blink or period <= 0:
-            return 235
-        t = time.time() / period * 2 * math.pi
-        s = (math.sin(t) + 1.0) / 2.0        # 0..1
-        return int(120 + 135 * s)
+        return P.alpha_at(self.presence.state, time.monotonic())
+
+    def _apply_alpha(self) -> bool:
+        """**只改 alpha 通道**，不重绘窗口内容。
+
+        这是动画的性能关键：呼吸/闪烁只调一次
+        ``SetLayeredWindowAttributes``（一次系统调用），
+        不碰 UpdateLayeredWindow 的逐像素重绘。
+        **定时器重绘整个窗口是明确禁止的做法** ——
+        48x48 的图每帧重绘要几千次像素写，白烧 CPU。
+        """
+        if not self.created or not self.hwnd:
+            return False
+        try:
+            u32 = ctypes.windll.user32
+            return bool(u32.SetLayeredWindowAttributes(
+                self.hwnd, 0, self._current_alpha(), ULW_ALPHA))
+        except Exception as exc:      # noqa: BLE001
+            self.error = str(exc)[:120]
+            return False
+
+    def _in_transition(self) -> bool:
+        """正在 200ms 颜色渐变中吗？"""
+        return self._transition is not None and \
+            P.transition_progress(self._transition[1]) < 1.0
 
     # ---------------- 消息循环 ----------------
     def _wnd_proc(self, hwnd, msg, wparam, lparam):
@@ -578,7 +641,11 @@ class BallWindow:
             pass
 
     def _on_timer(self) -> None:
-        """定时器：重绘（做脉冲动画）+ 检查悬停。"""
+        """定时器：动画 + 检查悬停。
+
+        **动画只改 alpha**（一次系统调用）。只有 200ms 颜色渐变期间
+        才重绘（有限帧数）。性能红线：不能定时重绘整个窗口。
+        """
         # 悬停检测：鼠标离开球的范围就恢复穿透
         try:
             u32 = ctypes.windll.user32
@@ -592,10 +659,23 @@ class BallWindow:
         except Exception:      # noqa: BLE001
             pass
 
-        blink, period = STATE_ANIMATION.get(
-            self.presence.state, (False, 0.0))
-        if blink:
+        if self._in_transition():
+            # 渐变中：重绘（插值色），最多 200ms/60ms ≈ 12 帧
             self._paint()
+        else:
+            # 非渐变：呼吸/闪烁只改 alpha，不重绘
+            self._apply_alpha()
+
+    def set_tick_callback(self, fn: Optional[Callable[[], Any]]) -> None:
+        """注册主循环的 tick 回调（每轮消息循环调一次）。
+
+        ⚠ 给**外挂部件**用的：热键轮询（:mod:`avatar_shell.hotkey`）、
+        tooltip 倒计时（:mod:`avatar_shell.tooltip`）都要和球的消息循环
+        并存，但它们没有自己的窗口消息循环 —— 挂在这里最省事。
+
+        tick 回调**必须不阻塞**（它跑在消息循环里）。
+        """
+        self._tick_cb = fn
 
     def run(self, *, tick_ms: int = 60) -> int:
         """消息循环。**阻塞到窗口关闭。**
@@ -620,6 +700,11 @@ class BallWindow:
                     break
                 u32.TranslateMessage(ctypes.byref(msg))
                 u32.DispatchMessageW(ctypes.byref(msg))
+                if self._tick_cb is not None:
+                    try:
+                        self._tick_cb()
+                    except Exception:      # noqa: BLE001
+                        pass      # tick 炸了不能带走消息循环
             u32.KillTimer(self.hwnd, TIMER_ID)
             return 0
         except Exception as exc:      # noqa: BLE001
@@ -760,17 +845,31 @@ def selfcheck(quick: bool = True) -> dict:
     _add("★ 非法 set_state 记下了 error",
          bool(b3.error), b3.error[:40])
 
-    # ============ 5) 动画 ============
+    # ============ 5) 动画（委托 presence 纯逻辑）============
     b4 = BallWindow()
-    _add("★ 空闲时 alpha 恒定（不闪）",
-         b4._current_alpha() == b4._current_alpha() == 235, "235")
+    _add("★ 空闲时 alpha 恒定 255（不闪）",
+         b4._current_alpha() == 255
+         and b4._current_alpha() == b4._current_alpha(), "255 恒定")
     b4.presence.start()
     a1 = b4._current_alpha()
-    _add("★ 运行时 alpha 在合理区间",
-         100 <= a1 <= 260, str(a1))
-    _add("★ 运行时的 alpha 会随时间变化",
+    _add("★ 运行时 alpha 在呼吸区间（115~255）",
+         P.PULSE_MIN_ALPHA <= a1 <= 255, str(a1))
+    _add("★ 运行时的 alpha 会随时间变化（呼吸）",
          (lambda: (time.sleep(0.08), b4._current_alpha() != a1)[-1])(),
          "会变")
+    b4.presence.set("needs_human", "自检")
+    flashes = {b4._current_alpha() for _ in range(4)}
+    _add("★ needs_human 的 alpha 只取 0 或 255（硬切闪烁）",
+         flashes <= {0, 255}, str(sorted(flashes)))
+    b4.presence.reset()
+    _add("★ 渐变字段随状态切换被记录",
+         b4.set_state("running", "自检") and b4._transition is not None
+         and b4._transition[0] in ("idle", "needs_human", "error", "running"),
+         "旧状态已记")
+    # 过期的渐变（1 秒前开始）访问 color 时应被自动清场
+    b4._transition = ("running", time.monotonic() - 1.0)
+    _ = b4.color
+    _add("★ 渐变完成后自动清场", b4._transition is None, "过期渐变被清")
 
     # ============ 6) 消息处理（不建窗口，直接调）============
     b5 = BallWindow()

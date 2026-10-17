@@ -185,10 +185,16 @@ MODULE_SELFCHECKS = [
     # 顺序由底向上：state 是纯状态机（零 IO，最快）；
     # menu 是纯函数构建菜单项；ball 要真建分层窗口（碰 GDI）；
     # bridge 要起 MCP 子进程（最慢，也最可能受环境影响）。
+    # presence/tooltip/hotkey/input_box 是 2026-10-17 新增的
+    # Agent Presence 部件 —— 全是纯逻辑自检（不建窗口）。
     ("外壳", "avatar_shell.state"),
     ("外壳", "avatar_shell.menu"),
     ("外壳", "avatar_shell.ball"),
     ("外壳", "avatar_shell.bridge"),
+    ("外壳", "avatar_shell.presence"),
+    ("外壳", "avatar_shell.tooltip"),
+    ("外壳", "avatar_shell.hotkey"),
+    ("外壳", "avatar_shell.input_box"),
 ]
 
 #: 集成测试文件（相对仓库根）

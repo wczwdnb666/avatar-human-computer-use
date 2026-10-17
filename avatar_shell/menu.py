@@ -52,6 +52,7 @@ __all__ = [
     "MENU_ITEMS",
     "COMMAND_START",
     "COMMAND_STATUS",
+    "COMMAND_RECENT",
     "COMMAND_PAUSE",
     "COMMAND_INTERVENE",
     "COMMAND_QUIT",
@@ -66,6 +67,7 @@ __all__ = [
 # ---- 命令常量 ----
 COMMAND_START = "start"          # 启动任务
 COMMAND_STATUS = "status"        # 查看状态
+COMMAND_RECENT = "recent"        # 查看最近任务
 COMMAND_PAUSE = "pause"          # 暂停
 COMMAND_INTERVENE = "intervene"  # 熔断（叫人）
 COMMAND_QUIT = "quit"            # 退出
@@ -128,6 +130,7 @@ class MenuItem:
 MENU_ITEMS: List[MenuItem] = [
     MenuItem(COMMAND_START, "启动任务…", hint="弹出输入框，说一句话目标"),
     MenuItem(COMMAND_STATUS, "查看状态", hint="显示当前任务与历史"),
+    MenuItem(COMMAND_RECENT, "查看最近任务", hint="最近 5 条任务名 + 状态"),
     MenuItem("", "", separator=True),
     MenuItem(COMMAND_PAUSE, "暂停", hint="暂停当前任务"),
     MenuItem(COMMAND_INTERVENE, "熔断（叫人）", hint="立即停下，等人处理"),
@@ -296,7 +299,7 @@ def selfcheck(quick: bool = True) -> dict:
 
     real = [i for i in MENU_ITEMS if not i.separator]
     seps = [i for i in MENU_ITEMS if i.separator]
-    _add("有 5 个可点项", len(real) == 5, "%d 个" % len(real))
+    _add("有 6 个可点项", len(real) == 6, "%d 个" % len(real))
     _add("有 2 个分隔符", len(seps) == 2, "%d 个" % len(seps))
 
     # ============ 2) 命令齐全 ============
