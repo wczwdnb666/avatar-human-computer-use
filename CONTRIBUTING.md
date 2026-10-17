@@ -125,7 +125,7 @@ class TestRealRecognition:
 
 ```bash
 # 加一个叫 find_template 的函数前，先查有没有重名
-grep -rn "def find_template\|class find_template" avatar/ avatar_shell/
+grep -rn "def find_template\|class find_template" avatar/
 ```
 
 **为什么**：本项目**踩过这个坑**。
@@ -255,7 +255,6 @@ python scripts/selfcheck.py --list       # 只列出会跑什么
    ```bash
    python scripts/selfcheck.py
    python -m pytest tests/ -q
-   python -m avatar_shell --selftest
    ```
 
 5. **按模板填 PR 描述** —— 尤其"怎么验证"那一栏，

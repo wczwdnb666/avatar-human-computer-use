@@ -60,9 +60,9 @@ Repository = "https://github.com/wczwdnb666/avatar-human-computer-use"
 Issues = "https://github.com/wczwdnb666/avatar-human-computer-use/issues"
 
 [tool.setuptools.packages.find]
-# avatar 是主包；avatar_shell 是**独立外壳包**（不 import 主包，
-# 只通过 stdio / MCP 通信）。两个都要能独立安装。
-include = ["avatar*"]
+# avatar 是**唯一**的包（2026-10-17 移除了独立外壳包 ——
+# 项目聚焦核心引擎与 MCP）。
+include = ["avatar"]
 
 [tool.ruff]
 # 行宽以 CONTRIBUTING.md 说的为准：**尽量 79，硬上限 100**。

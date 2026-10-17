@@ -53,7 +53,7 @@ BANNED = {'requests','httpx','aiohttp','openai','anthropic','litellm',
           'PIL','cv2','numpy','pytesseract','paddleocr','easyocr',
           'win32com','comtypes','pywin32','clr','pydantic','anyio'}
 bad = []
-for p in list(pathlib.Path('avatar').rglob('*.py')) + list(pathlib.Path('avatar_shell').rglob('*.py')):
+for p in list(pathlib.Path('avatar').rglob('*.py')):
     for n in ast.walk(ast.parse(p.read_text(encoding='utf-8'))):
         names = []
         if isinstance(n, ast.Import):
@@ -65,17 +65,13 @@ print('✗ ' + '\n✗ '.join(bad[:20]) if bad else '✓ 零第三方依赖')
 sys.exit(1 if bad else 0)
 "
 
-# 1.2 模块自检 + 硬约束（含阶段九外壳）
+# 1.2 模块自检 + 硬约束
 python scripts/selfcheck.py
 
 # 1.3 全量测试（约 5 分钟，会动鼠标）
 python -m pytest tests/ -q
 
-# 1.4 外壳自检（独立包）
-python -m avatar_shell --selftest
 
-# 1.5 外壳测试
-python -m pytest tests/test_phase9_shell.py -q
 ```
 
 **通过判据**
@@ -127,7 +123,6 @@ git config user.email "你的邮箱"
 ```bash
 # 3.1 确认版本号一致
 grep -n '^version' pyproject.toml            # version = "0.1.0"
-grep -n '__version__' avatar_shell/__init__.py   # __version__ = "0.1.0"
 
 # 3.2 打**附注** tag
 git tag -a v0.1.0 -m "Avatar v0.1.0 —— 首个版本：九个阶段全部交付"
@@ -207,7 +202,7 @@ git remote set-url origin https://github.com/wczwdnb666/avatar-human-computer-us
 
 `release.yml` 做三件事：
 
-1. 校验 tag 与 `pyproject.toml` / `avatar_shell/__init__.py` 的版本号一致
+1. 校验 tag 与 `pyproject.toml` 的版本号一致
 2. 从 `CHANGELOG.md` 提取 `## [v0.1.0]` 一节的正文
 3. 创建 Release
 
@@ -262,8 +257,6 @@ git describe --tags                               # v0.1.0
 python scripts/selfcheck.py
 python -m pytest tests/ -q
 
-# 外壳能起来
-python -m avatar_shell --selftest
 ```
 
 **全绿 = 发布成功。**

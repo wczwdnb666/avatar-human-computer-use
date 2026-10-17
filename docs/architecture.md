@@ -31,11 +31,6 @@
 └─────────────────────────────────────────────────┘
 ```
 
-**`avatar_shell` 不在这张图里** —— 它是**独立包**，与主包只通过
-stdio / MCP 通信（**不 import avatar**）。这是刻意的：外壳可以独立
-替换，主包保持零依赖，外壳崩了不影响主包。
-详见「阶段九的定位」。
-
 **`risk_detector` 是唯一"回头看"的层**：其它层都在往外做动作，
 只有它在问"现在这个屏幕还安全吗"。它消费 `web_cdp`（读 DOM）、
 `app_manager`（读窗口）、`vision`（截图），产出
@@ -602,65 +597,6 @@ integration.install(enabled=True, mode_="block")   # 检出就熔断
 | 第五层在最后 | 阶段八硬约束 ⑨ | `LAYER_ORDER[-1] == llm` |
 | 零 SDK | 阶段八硬约束 ⑪ | 五个模块只用标准库 |
 
-## 阶段九的定位
-
-阶段九是**交互外壳** —— 全项目唯一一个**不在 `avatar/` 包里的模块**。
-
-存在理由很单一：Avatar 跑任务可以跑几十分钟，你得知道它
-**在干什么**，以及**什么时候需要你**。
-
-### 独立包，不是子模块
-
-```
-avatar/                     avatar_shell/
-├── vision/                 ├── state.py    状态机（零 IO）
-├── agentic_planner/        ├── menu.py     原生菜单
-├── mcp/                    ├── ball.py     分层透明窗口
-└── ...                     └── bridge.py   stdio → MCP
-        ▲                            │
-        └──────── stdio / MCP ───────┘
-             （单向依赖，不 import）
-```
-
-**为什么必须是独立包**（硬约束 2）：
-
-- 外壳可以**独立替换** —— 想换个 UI 就换，主包一行不动
-- 主包保持**零依赖** —— 它不需要知道外壳存在
-- 外壳崩了**不影响主包** —— 独立进程，故障隔离（硬约束 3）
-
-### 四种状态
-
-| 状态 | 颜色 | 动效 | 出边 |
-|---|---|---|---|
-| `idle` | 灰 | 静止 | → running |
-| `running` | 绿 | 呼吸 1.2s | → needs_human / error / idle |
-| `needs_human` | 橙 | **闪 + 提示音 0.5s** | → running（**只能靠 `resumed`**） |
-| `error` | 红 | 静止 | → idle（**只能靠 `reset`**） |
-
-**两条刻意设计**：
-
-- **`error` 没有别的出边** —— 出错不能自己"恢复"，得有人明确清掉。
-  否则"出错"会被静默吞掉，变成"看起来在跑"。
-- **`needs_human` 只能通过 `resumed` 回 `running`** —— 人工处理完了
-  要**明确告诉它**，不能靠超时自动放行。
-
-橙色闪得最快（0.5s）也是刻意的：`needs_human` 是唯一需要你
-立刻看一眼的状态；红色反而不闪 —— 闪是"要你管"，错是"已经停了"。
-
-### 阶段的验证核心
-
-| 检查 | 位置 | 判据 |
-|---|---|---|
-| 不 import avatar | 阶段九硬约束 ② | AST 扫 `avatar_shell/*.py` |
-| 零第三方 UI 框架 | 阶段九硬约束 ① | 只用 `ctypes` / `winsound` |
-| 透明窗口 | `ball.py` | `WS_EX_LAYERED` + `UpdateLayeredWindow` |
-| 不占任务栏 | `ball.py` | `WS_EX_TOOLWINDOW` |
-| 点击穿透可切换 | `ball.py` | `WS_EX_TRANSPARENT` |
-| 拖拽 | `ball.py` | `WM_NCHITTEST` → `HTCAPTION` |
-| 原生菜单 | `menu.py` | `TrackPopupMenu` + `TPM_RETURNCMD` |
-| 状态机无出边泄漏 | `state.py` | `error` 除 `reset` 外无出边 |
-| 桥接 stdout 卫生 | `bridge.py` | 日志只走 stderr，stdout 只走 JSON-RPC |
-
 ## 交付清单
 
 | 文件 | 阶段 | 职责 |
@@ -785,12 +721,6 @@ avatar/                     avatar_shell/
 | `vision/chain.py` | 八 | 第五层实现（`_layer_llm`） |
 | `tests/test_phase8_*.py` | 八 | 6 个文件 233 项测试 |
 | `docs/vision_llm.md` | 八 | **视觉大模型层完整设计** |
-| `avatar_shell/state.py` | 九 | Presence 状态机（四态 + 转换表 + 颜色/动效） |
-| `avatar_shell/ball.py` | 九 | 悬浮球窗口（分层透明 / 拖拽 / 穿透） |
-| `avatar_shell/menu.py` | 九 | 原生右键菜单（`TrackPopupMenu`） |
-| `avatar_shell/bridge.py` | 九 | 与 `avatar.mcp` 的 stdio 桥 |
-| `avatar_shell/__main__.py` | 九 | `python -m avatar_shell` |
-| `tests/test_phase9_shell.py` | 九 | 外壳测试（独立包，不依赖主包） |
 | `.github/workflows/ci.yml` | 九 | 多 Python 版本矩阵 + 零依赖 AST 检查 |
 | `.github/workflows/release.yml` | 九 | tag 触发 + 版本一致性校验 + Release |
 | `.github/ISSUE_TEMPLATE/` | 九 | Bug / 功能请求模板（禁空 issue） |

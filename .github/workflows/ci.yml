@@ -72,10 +72,8 @@ jobs:
               'pytest','pytest_mock','pytest_asyncio','unittest_mock',
           }
           bad = []
-          # ★ 两个包都要扫：avatar/ 是主包，avatar_shell/ 是独立外壳。
-          #   外壳同样必须零依赖（硬约束 1：不引入 UI 框架）。
-          files = (list(pathlib.Path('avatar').rglob('*.py'))
-                   + list(pathlib.Path('avatar_shell').rglob('*.py')))
+          # 只扫 avatar/（2026-10-17 移除了独立外壳包）。
+          files = list(pathlib.Path('avatar').rglob('*.py'))
           for p in files:
               tree = ast.parse(p.read_text(encoding='utf-8'))
               for n in ast.walk(tree):
@@ -120,19 +118,6 @@ jobs:
         run: |
           python -m pytest tests/ -q --no-header
 
-      # ⚠ 下面两步跟上面的「全量测试」**有意重叠**：
-      #   `tests/` 已经包含 `test_phase9_shell.py`，`scripts/selfcheck.py`
-      #   也已经包含四个外壳模块的自检。再单独跑一遍，是为了让外壳
-      #   出问题时**日志一眼可见** —— 混在全量里报错得翻好几屏。
-      - name: 外壳自检（独立包）
-        shell: bash
-        run: |
-          python -m avatar_shell --selftest
-
-      - name: 外壳测试
-        shell: bash
-        run: |
-          python -m pytest tests/test_phase9_shell.py -q --no-header
 
   # ----------------------------------------------------------------
   # 一个汇总 job —— 分支保护只需要勾这一个
